@@ -1,0 +1,37 @@
+# --- Secrets: never commit keys or env files ---
+*.keypair
+*-keypair.json
+id.json
+keypair*.json
+wallet*.json
+.env
+.env.*
+!.env.example
+
+# --- Rust / Anchor ---
+target/
+.anchor/
+**/*.rs.bk
+
+# --- Node / TypeScript ---
+node_modules/
+dist/
+*.tsbuildinfo
+npm-debug.log*
+yarn-error.log*
+
+# --- Solana local validator ---
+test-ledger/
+.surfpool/
+
+# --- Runtime data ---
+logs/
+*.log
+*.jsonl
+data/
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+.vscode/settings.json
+.idea/
