@@ -6,7 +6,8 @@
   "scripts": {
     "hello": "tsx src/hello.ts",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "fixtures": "tsx src/fetch_fixtures.ts"
   },
   "keywords": [],
   "author": "",
