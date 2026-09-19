@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit",
     "decode:dlmm": "tsx src/decode_dlmm.ts",
     "decode": "tsx src/decode_fixtures.ts",
+    "decode:rpc": "tsx src/decode_rpc.ts",
     "fixtures": "tsx src/fetch_fixtures.ts"
   },
   "keywords": [],
