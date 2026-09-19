@@ -1,5 +1,5 @@
 import { Connection, PublicKey, type ParsedTransactionWithMeta, type ParsedInstruction, type PartiallyDecodedInstruction } from "@solana/web3.js";
-
+import { WATCHLIST } from "./config/watchlist";
 // Usage: FROM_SLOT=... TO_SLOT=... tsx src/reconcile_probe.ts
 // Lists every transaction that touched the given pools inside the slot range and prints who did what.
 try { process.loadEnvFile(".env"); } catch { /* optional */ }
@@ -9,10 +9,10 @@ const FROM = Number(process.env.FROM_SLOT);
 const TO = Number(process.env.TO_SLOT);
 if (!FROM || !TO || TO < FROM) { console.error("set FROM_SLOT and TO_SLOT"); process.exit(1); }
 
-const POOLS: Record<string, string> = {
-    "PERPSPAD dlmm80": "EHqk4Fw3pTCf9UW75dWoCMf6a2GxyJ8FGYEj2Qmw9rfr",
-    "PERPSPAD damm": "84uf4YpzybB4vm8RsermBFqjGxThAETpyMbp5HvkVRJQ",
-};
+const TOKEN = process.env.TOKEN ?? "PERPSPAD";
+const POOLS: Record<string, string> = Object.fromEntries(WATCHLIST.filter((p) => p.token === TOKEN).map((p) => [p.label, p.address]));
+if (Object.keys(POOLS).length === 0) { console.error(`no pools for TOKEN=${TOKEN}`); process.exit(1); }
+
 const PROGRAMS: Record<string, string> = {
     LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo: "meteora-dlmm",
     cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG: "meteora-damm-v2",
