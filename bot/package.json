@@ -11,6 +11,7 @@
     "decode": "tsx src/decode_fixtures.ts",
     "decode:rpc": "tsx src/decode_rpc.ts",
     "probe": "tsx src/feed/ws_probe.ts",
+    "logger": "tsx src/feed/logger.ts",
     "fixtures": "tsx src/fetch_fixtures.ts"
   },
   "keywords": [],
