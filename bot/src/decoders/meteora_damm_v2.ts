@@ -44,13 +44,26 @@ export type DammV2PoolState = {
   price: number;
 };
 
+/** The SDK's full pool state (camelCase). The quoter needs all of it; the summary below is for logging. */
+export function decodeDammV2Raw(data: Buffer): PoolState {
+  return program.coder.accounts.decode("pool", data) as PoolState;
+}
+
 export function decodeDammV2Pool(
   address: string,
   data: Buffer,
   decimalsA: number,
   decimalsB: number,
 ): DammV2PoolState {
-  const pool = program.coder.accounts.decode("pool", data) as PoolState;
+  return summarizeDammV2(address, decodeDammV2Raw(data), decimalsA, decimalsB);
+}
+
+export function summarizeDammV2(
+  address: string,
+  pool: PoolState,
+  decimalsA: number,
+  decimalsB: number,
+): DammV2PoolState {
   const price = getPriceFromSqrtPrice(pool.sqrtPrice, decimalsA, decimalsB).toNumber();
 
   const baseFeeBytes = pool.poolFees.baseFee.baseFeeInfo.data;
