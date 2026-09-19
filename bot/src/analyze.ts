@@ -1,14 +1,24 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { gapNetOfFees } from "./scanner/gap";
+import { MAX_FEE_BPS } from "./config/watchlist";
 
 // Usage: tsx src/analyze.ts [file.jsonl ...]   (default: every logs/divergence-*.jsonl)
 // Thresholds are "net gap after both fees" in percent. 0 = a real opportunity; negatives = near-misses.
+//
+// Two kinds of opportunity are reported:
+//   end-of-slot: the gap as it stood when a slot closed. Only these survive a slot boundary, so only these
+//                are reachable for a bot that reacts to published state (our tier). Persistence is in slots.
+//   intra-slot:  flashes that appeared and were closed inside one slot (shock and arb in the same block).
+//                Reachable only with shred-level data. Counted, not measured for persistence.
 const THRESHOLDS = (process.env.THRESHOLDS ?? "0,-0.25,-0.5").split(",").map(Number);
 const LOG_DIR = process.env.LOG_DIR ?? "logs";
 
+type Snap = Record<string, [number, number, number]>; // label -> [price, feeBps, slot]
 type Upd = { ts: string; slot: number; lag: number; token: string; pool: string; changed: boolean;
-  best: { a: string; b: string; gapPct: number; floorPct: number; netPct: number; dir: string } | null };
-type Episode = { token: string; pair: string; startSlot: number; endSlot: number; startTs: string; maxNet: number; updates: number };
+  best: { a: string; b: string; gapPct: number; floorPct: number; netPct: number; dir: string } | null; snap: Snap };
+type SlotState = { slot: number; ts: string; net: number; pair: string; maxIntra: number; intraPair: string };
+type Episode = { startSlot: number; endSlot: number; startTs: string; maxNet: number; pair: string };
 
 const files = process.argv.slice(2).length
   ? process.argv.slice(2)
@@ -29,7 +39,20 @@ for (const f of files) {
   }
 }
 const hours = (Date.parse(lastTs) - Date.parse(firstTs)) / 3.6e6;
+const perDay = (n: number) => (hours > 0 ? (n / hours) * 24 : NaN).toFixed(1);
 const pct = (arr: number[], p: number) => { const s = [...arr].sort((a, b) => a - b); return s.length ? s[Math.min(s.length - 1, Math.floor(p * s.length))] : NaN; };
+
+// Best pair from a snapshot, same rule as the logger (pools above MAX_FEE_BPS excluded).
+function bestFromSnap(snap: Snap): { net: number; pair: string } {
+  const labels = Object.keys(snap).filter((l) => snap[l][1] <= MAX_FEE_BPS && snap[l][0] > 0);
+  let best = { net: -Infinity, pair: "" };
+  for (let i = 0; i < labels.length; i++) for (let j = i + 1; j < labels.length; j++) {
+    const a = snap[labels[i]], b = snap[labels[j]];
+    const g = gapNetOfFees(a[0], a[1], b[0], b[1]);
+    if (g.netPct > best.net) best = { net: g.netPct, pair: `${labels[i]} vs ${labels[j]}` };
+  }
+  return best;
+}
 
 console.log(`files: ${files.length}  span: ${firstTs} -> ${lastTs} (${hours.toFixed(2)} h)`);
 console.log(`updates: ${upds.length}  heartbeats: ${hb}  reconnects: ${reconnects}  errors: ${errors}  max stale: ${maxStale}s`);
@@ -40,30 +63,45 @@ const byToken = new Map<string, Upd[]>();
 for (const u of upds) (byToken.get(u.token) ?? byToken.set(u.token, []).get(u.token)!).push(u);
 
 for (const [token, list] of byToken) {
-  const nets = list.filter((u) => u.best).map((u) => u.best!.netPct);
+  list.sort((a, b) => a.slot - b.slot || a.ts.localeCompare(b.ts));
   const changes = list.filter((u) => u.changed).length;
   console.log(`\n== ${token}: ${list.length} updates, ${changes} price changes (${(changes / Math.max(hours, 1e-9)).toFixed(1)}/h)`);
-  console.log(`   net gap %: max ${Math.max(...nets).toFixed(3)}  p99 ${pct(nets, 0.99).toFixed(3)}  p95 ${pct(nets, 0.95).toFixed(3)}  median ${pct(nets, 0.5).toFixed(3)}`);
-  const pairs = new Map<string, number>();
-  for (const u of list) if (u.best) { const k = `${u.best.a} vs ${u.best.b}`; pairs.set(k, (pairs.get(k) ?? 0) + 1); }
-  console.log(`   best pair by frequency: ${[...pairs].sort((a, b) => b[1] - a[1]).map(([k, n]) => `${k} (${n})`).join(", ")}`);
+
+  // One state per slot that had updates: the gap when the slot closed, plus the best flash seen inside it.
+  const slots: SlotState[] = [];
+  for (const u of list) {
+    const last = slots[slots.length - 1];
+    const intra = u.best ? u.best.netPct : -Infinity;
+    if (!last || last.slot !== u.slot) {
+      const b = bestFromSnap(u.snap);
+      slots.push({ slot: u.slot, ts: u.ts, net: b.net, pair: b.pair, maxIntra: intra, intraPair: u.best ? `${u.best.a} vs ${u.best.b}` : "" });
+    } else {
+      const b = bestFromSnap(u.snap);
+      last.net = b.net; last.pair = b.pair;
+      if (intra > last.maxIntra) { last.maxIntra = intra; last.intraPair = u.best ? `${u.best.a} vs ${u.best.b}` : ""; }
+    }
+  }
+  const endNets = slots.map((s) => s.net).filter(Number.isFinite);
+  console.log(`   end-of-slot net gap %: max ${Math.max(...endNets).toFixed(3)}  p99 ${pct(endNets, 0.99).toFixed(3)}  p95 ${pct(endNets, 0.95).toFixed(3)}  median ${pct(endNets, 0.5).toFixed(3)}   (${slots.length} slots with updates)`);
 
   for (const T of THRESHOLDS) {
-    // An episode = a run of consecutive updates (in slot order) where the token's best net gap stays above T.
+    // End-of-slot episodes: from the first slot that closed above T to the first later slot that closed at or below T.
     const eps: Episode[] = [];
     let cur: Episode | null = null;
-    for (const u of [...list].sort((a, b) => a.slot - b.slot)) {
-      const above = !!u.best && u.best.netPct > T;
-      if (above) {
-        if (!cur) cur = { token, pair: `${u.best!.a} vs ${u.best!.b}`, startSlot: u.slot, endSlot: u.slot, startTs: u.ts, maxNet: u.best!.netPct, updates: 0 };
-        cur.endSlot = u.slot; cur.maxNet = Math.max(cur.maxNet, u.best!.netPct); cur.updates++;
-      } else if (cur) { eps.push(cur); cur = null; }
+    for (const s of slots) {
+      if (s.net > T) {
+        if (!cur) cur = { startSlot: s.slot, endSlot: s.slot, startTs: s.ts, maxNet: s.net, pair: s.pair };
+        else { cur.endSlot = s.slot; if (s.net > cur.maxNet) { cur.maxNet = s.net; cur.pair = s.pair; } }
+      } else if (cur) { cur.endSlot = s.slot; eps.push(cur); cur = null; }
     }
     if (cur) eps.push(cur);
     const durs = eps.map((e) => e.endSlot - e.startSlot);
-    const perDay = hours > 0 ? (eps.length / hours) * 24 : NaN;
-    console.log(`   net > ${T}%: ${eps.length} episodes (${perDay.toFixed(1)}/day)  persistence slots: median ${pct(durs, 0.5)}  p90 ${pct(durs, 0.9)}  max ${durs.length ? Math.max(...durs) : NaN}`);
-    for (const e of eps.sort((a, b) => b.maxNet - a.maxNet).slice(0, 3))
-      console.log(`      ${e.startTs}  slots ${e.startSlot}-${e.endSlot} (${e.endSlot - e.startSlot})  max net ${e.maxNet.toFixed(3)}%  ${e.pair}`);
+    // A flash: the gap peaked above T inside the slot but had closed by at least 0.1 points when the slot ended.
+    const flashes = slots.filter((s) => s.maxIntra > T && s.maxIntra > s.net + 0.1);
+    console.log(`   net > ${T}%: end-of-slot ${eps.length} episodes (${perDay(eps.length)}/day), persistence slots median ${pct(durs, 0.5)} p90 ${pct(durs, 0.9)} max ${durs.length ? Math.max(...durs) : NaN};  intra-slot flashes ${flashes.length} (${perDay(flashes.length)}/day)`);
+    for (const e of [...eps].sort((a, b) => b.maxNet - a.maxNet).slice(0, 3))
+      console.log(`      survived: ${e.startTs}  slots ${e.startSlot}-${e.endSlot} (${e.endSlot - e.startSlot})  max net ${e.maxNet.toFixed(3)}%  ${e.pair}`);
+    for (const s of [...flashes].sort((a, b) => b.maxIntra - a.maxIntra).slice(0, 3))
+      console.log(`      flash:    ${s.ts}  slot ${s.slot}  peak ${s.maxIntra.toFixed(3)}% -> closed at ${s.net.toFixed(3)}%  ${s.intraPair}`);
   }
 }
