@@ -6,6 +6,8 @@ import {
   getBaseFee,
   getTotalFee,
   getPriceOfBinByBinId,
+  type BinArray,
+  type BinArrayBitmapExtension,
   type LbPair,
 } from "@meteora-ag/dlmm";
 
@@ -34,13 +36,31 @@ export type DlmmPoolState = {
 
 const FEE_PRECISION = 1_000_000_000; // DLMM fee rates are scaled by 1e9
 
+/** The SDK's full pool state. The quoter needs all of it (liquidity bitmap, fee parameters); the summary is for logging. */
+export function decodeDlmmRaw(data: Buffer): LbPair {
+  return decodeAccount<LbPair>(program, "lbPair", data);
+}
+
+/** One bin array: 70 consecutive price bins with the liquidity sitting in each. */
+export function decodeBinArray(data: Buffer): BinArray {
+  return decodeAccount<BinArray>(program, "binArray", data);
+}
+
+/** Optional per-pool account that extends the liquidity bitmap beyond the 1,024 bin arrays tracked inside the pool. */
+export function decodeBitmapExtension(data: Buffer): BinArrayBitmapExtension {
+  return decodeAccount<BinArrayBitmapExtension>(program, "binArrayBitmapExtension", data);
+}
+
 export function decodeDlmmPool(
   address: string,
   data: Buffer,
   decimalsX: number,
   decimalsY: number,
 ): DlmmPoolState {
-  const lb = decodeAccount<LbPair>(program, "lbPair", data);
+  return summarizeDlmm(address, decodeDlmmRaw(data), decimalsX, decimalsY);
+}
+
+export function summarizeDlmm(address: string, lb: LbPair, decimalsX: number, decimalsY: number): DlmmPoolState {
   const activeId = Number(lb.activeId);
   const binStep = Number(lb.binStep);
   const priceRaw = getPriceOfBinByBinId(activeId, binStep); // y per x in raw units: (1 + binStep/10000)^activeId

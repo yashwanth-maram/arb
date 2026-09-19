@@ -15,7 +15,8 @@
     "analyze": "tsx src/analyze.ts",
     "reconcile": "tsx src/reconcile_probe.ts",
     "fixtures": "tsx src/fetch_fixtures.ts",
-    "depth": "tsx src/depth.ts"
+    "depth": "tsx src/depth.ts",
+    "snapshot": "tsx src/fetch_depth_snapshot.ts"
   },
   "keywords": [],
   "author": "",
