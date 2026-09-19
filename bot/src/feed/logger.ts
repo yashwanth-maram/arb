@@ -14,7 +14,7 @@ const HTTP = process.env.RPC_HTTP ?? `https://mainnet.helius-rpc.com/?api-key=${
 const WS = process.env.RPC_WS ?? `wss://mainnet.helius-rpc.com/?api-key=${KEY}`;
 const LOG_DIR = process.env.LOG_DIR ?? "logs";
 const HEARTBEAT_SECONDS = Number(process.env.HEARTBEAT_SECONDS ?? 60);
-const STALE_SECONDS = Number(process.env.STALE_SECONDS ?? 30);     // no slot update for this long -> reconnect
+const STALE_SECONDS = Number(process.env.STALE_SECONDS ?? 15);     // no slot update for this long -> reconnect
 const RUN_SECONDS = Number(process.env.RUN_SECONDS ?? 0);          // 0 = run forever
 
 // ---- log file ---------------------------------------------------------------------------
@@ -140,8 +140,10 @@ async function main() {
     console.log(line);
   }, HEARTBEAT_SECONDS * 1000);
 
+    let reconnecting = false;
   const watchdog = setInterval(async () => {
-    if (Date.now() - lastSlotAt < STALE_SECONDS * 1000) return;
+    if (reconnecting || Date.now() - lastSlotAt < STALE_SECONDS * 1000) return;
+    reconnecting = true;
     reconnects++;
     const msg = writeLine({ t: "reconnect", reason: `no slot update for ${STALE_SECONDS}s`, reconnects });
     console.log(msg);
@@ -151,6 +153,8 @@ async function main() {
     } catch (e) {
       writeLine({ t: "error", msg: `reconnect failed: ${(e as Error).message}` });
       lastSlotAt = Date.now() - (STALE_SECONDS - 10) * 1000; // retry in ~10 s
+    } finally {
+      reconnecting = false;
     }
   }, 5000);
 
