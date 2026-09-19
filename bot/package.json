@@ -8,6 +8,7 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "decode:dlmm": "tsx src/decode_dlmm.ts",
+    "decode": "tsx src/decode_fixtures.ts",
     "fixtures": "tsx src/fetch_fixtures.ts"
   },
   "keywords": [],
