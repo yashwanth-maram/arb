@@ -13,6 +13,7 @@
     "probe": "tsx src/feed/ws_probe.ts",
     "logger": "tsx src/feed/logger.ts",
     "analyze": "tsx src/analyze.ts",
+    "reconcile": "tsx src/reconcile_probe.ts",
     "fixtures": "tsx src/fetch_fixtures.ts"
   },
   "keywords": [],
