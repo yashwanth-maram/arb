@@ -18,11 +18,15 @@ type SwapIxResponse = {
   addressLookupTableAddresses?: string[]; addressesByLookupTableAddress?: Record<string, string[]> | null;
 };
 export type WeldOptions = { base?: string; maxAccounts?: number; slippageBps?: number; computeUnitPriceMicroLamports?: number; connection?: Connection };
+// Without a lookup table every account costs 32 bytes, so two legs fit only up to about 30 accounts in total.
+// Routes differ per token, so try progressively narrower routes rather than guessing one width for all of them.
+export const MAX_ACCOUNTS_LADDER = [14, 12, 10, 8];
 export type Welded = {
   sizeLamports: number; tokensQuoted: string; lamportsBackQuoted: number; netPct: number;
   buyVia: string[]; sellVia: string[]; buySlot: number; sellSlot: number;
   instructions: TransactionInstruction[]; lookupTables: AddressLookupTableAccount[]; message: MessageV0;
   sizeBytes: number; fits: boolean; staticAccounts: number; lookedUpAccounts: number; droppedDuplicates: number;
+  maxAccountsUsed: number; attempts: string[];
 };
 
 const toIx = (ix: JupIx) => new TransactionInstruction({
@@ -62,9 +66,10 @@ async function lookupTables(parts: SwapIxResponse[], connection?: Connection): P
   return [...out.values()];
 }
 
-export async function buildWeldedTrade(tokenMint: string, sizeLamports: number, user: PublicKey, opts: WeldOptions = {}): Promise<Welded> {
+/** One attempt at a given route width. Narrower routes touch fewer pools, so the message is smaller. */
+async function buildAt(tokenMint: string, sizeLamports: number, user: PublicKey, opts: WeldOptions, maxAccounts: number): Promise<Welded> {
   const base = opts.base ?? process.env.JUP_BASE ?? "https://lite-api.jup.ag";
-  const o = { maxAccounts: opts.maxAccounts ?? 20, slippageBps: opts.slippageBps ?? 0 };
+  const o = { maxAccounts, slippageBps: opts.slippageBps ?? 0 };
   const buy = await quote(base, WSOL, tokenMint, String(sizeLamports), o);
   const sell = await quote(base, tokenMint, WSOL, buy.outAmount, o); // sell exactly what the buy is quoted to deliver
   const [a, b] = await Promise.all([swapInstructions(base, buy, user.toBase58()), swapInstructions(base, sell, user.toBase58())]);
@@ -82,15 +87,44 @@ export async function buildWeldedTrade(tokenMint: string, sizeLamports: number, 
   ];
 
   const tables = await lookupTables([a, b], opts.connection);
-  const message = new TransactionMessage({ payerKey: user, recentBlockhash: DUMMY_BLOCKHASH, instructions }).compileToV0Message(tables);
-  const sizeBytes = 1 + 64 * message.header.numRequiredSignatures + message.serialize().length;
+  // A route with no lookup table must spell out every account at 32 bytes, and web3.js throws while encoding once
+  // that overruns the limit. Report it as an oversized build instead, so the caller learns which routes are too wide.
+  let message: MessageV0, sizeBytes: number;
+  try {
+    message = new TransactionMessage({ payerKey: user, recentBlockhash: DUMMY_BLOCKHASH, instructions }).compileToV0Message(tables);
+    sizeBytes = 1 + 64 * message.header.numRequiredSignatures + message.serialize().length;
+  } catch (e) {
+    const accounts = new Set<string>();
+    for (const ix of instructions) { accounts.add(ix.programId.toBase58()); ix.keys.forEach((k) => accounts.add(k.pubkey.toBase58())); }
+    throw new Error(`too big to encode: ${accounts.size} accounts across ${instructions.length} instructions, ${tables.length} lookup table(s) (${(e as Error).message})`);
+  }
   const back = Number(sell.outAmount);
   return {
     sizeLamports, tokensQuoted: buy.outAmount, lamportsBackQuoted: back, netPct: (back / sizeLamports - 1) * 100,
     buyVia: venues(buy), sellVia: venues(sell), buySlot: buy.contextSlot ?? 0, sellSlot: sell.contextSlot ?? 0,
-    instructions, lookupTables: tables, message, sizeBytes, fits: sizeBytes <= TX_SIZE_LIMIT,
+    instructions, lookupTables: tables, message, sizeBytes, fits: sizeBytes <= TX_SIZE_LIMIT, maxAccountsUsed: maxAccounts, attempts: [],
     staticAccounts: message.staticAccountKeys.length,
     lookedUpAccounts: message.addressTableLookups.reduce((n, l) => n + l.writableIndexes.length + l.readonlyIndexes.length, 0),
     droppedDuplicates: wanted.length - kept.length,
   };
+}
+
+/** Build the welded trade, narrowing the route until the message encodes and fits with a real margin. */
+export async function buildWeldedTrade(tokenMint: string, sizeLamports: number, user: PublicKey, opts: WeldOptions = {}): Promise<Welded> {
+  const ladder = opts.maxAccounts ? [opts.maxAccounts] : MAX_ACCOUNTS_LADDER;
+  const attempts: string[] = [];
+  let lastError = "";
+  for (const maxAccounts of ladder) {
+    try {
+      const w = await buildAt(tokenMint, sizeLamports, user, opts, maxAccounts);
+      attempts.push(`${maxAccounts}:${w.sizeBytes}b`);
+      if (w.fits) return { ...w, attempts };
+      lastError = `${w.sizeBytes} bytes, over by ${w.sizeBytes - TX_SIZE_LIMIT}`;
+    } catch (e) {
+      lastError = (e as Error).message;
+      attempts.push(`${maxAccounts}:${lastError.startsWith("too big") ? "too big" : "error"}`);
+      if (!lastError.startsWith("too big")) throw e; // a quote or network failure is not a size problem
+    }
+  }
+  throw new Error(`no route fits in one transaction (tried ${attempts.join(", ")}): ${lastError}`);
 }

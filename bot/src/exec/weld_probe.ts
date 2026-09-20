@@ -10,7 +10,8 @@ const TOKENS: [string, string][] = process.env.TOKEN ? [["custom", process.env.T
   ["PEPE", "PEPEqnuuCDbBC89p1u9vpnP1KQ2oj1xTcQBsjt9X55m"],
 ];
 const SIZE_SOL = Number(process.env.SIZE_SOL ?? 0.5);
-const MAX_ACCOUNTS = Number(process.env.MAX_ACCOUNTS ?? 20);
+// 14 a leg leaves room for the shared setup steps: two legs at 20 only fit when the route brings a lookup table.
+const MAX_ACCOUNTS = Number(process.env.MAX_ACCOUNTS ?? 14);
 
 async function main() {
   const user = Keypair.generate().publicKey; // throwaway: never saved, never funded, never signs

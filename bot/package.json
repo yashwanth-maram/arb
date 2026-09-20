@@ -22,7 +22,8 @@
     "candidates:depth": "tsx src/research/depth_candidates.ts",
     "jup": "tsx src/research/jup_roundtrip.ts",
     "exec:probe": "tsx src/exec/probe_swap_ix.ts",
-    "exec:weld": "tsx src/exec/weld_probe.ts"
+    "exec:weld": "tsx src/exec/weld_probe.ts",
+    "exec:sim": "tsx src/exec/sim_probe.ts"
   },
   "keywords": [],
   "author": "",
