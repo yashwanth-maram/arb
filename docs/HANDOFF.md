@@ -34,7 +34,7 @@ Polymarket is prohibited in India (May 2026): excluded. Arena = Solana DEX atomi
 - Repo: github.com/yashwanth-maram/arb (private), SSH key arb-dev-laptop. Helius free-plan key only in bot/.env as HELIUS_API_KEY.
 - Helius free plan (docs read 2026-09-20): 1M credits/month, 10 RPC req/s, 5 WebSocket connections, 1,000 subscriptions each;
   every standard RPC call = 1 credit whatever the size; WebSocket data is metered at 2 credits per 0.1 MB. The logger streams roughly
-  260 MB/day (about 5-6k credits/day by estimate). STILL TO CONFIRM: the real "credits used" number on dashboard.helius.dev.
+  260 MB/day (about 5-6k credits/day by estimate). Confirmed on the dashboard 2026-09-20: 4,740 credits used after the first day (logger, reconcile probes, all one-off reads).
 - Logger, 24/7: start `cd ~/arb && nohup ops/run_logger.sh > /dev/null 2>&1 &`
   restart `cd ~/arb && ops/stop_logger.sh; sleep 3; pkill -9 -f "feed/logger.ts"; sleep 1; nohup ops/run_logger.sh > /dev/null 2>&1 &`
   health `tail -n 1 ~/arb/bot/logs/divergence-$(date -u +%F).jsonl | cut -c1-120`; supervisor log bot/logs/logger.out.
@@ -110,7 +110,7 @@ Week 1 review = Checkpoint 2 on 2026-09-26 (D14, tier decision). Alpenglow mainn
 2. Step 8.8: analyze.ts joins probes to headline episodes. For each end-of-slot episode (net > 0 and > -0.25%), attach probes whose trigSlot
    falls inside it; report episodes probed, the share with executable net > 0 at dust / 0.1 / 0.5 / 2 SOL, the phantom size
    (headline net minus executable dust net) by pair and direction, probe ms and slot lag (slot - trigSlot), and error counts.
-3. Confirm the Helius credits actually used (dashboard) against the estimate in section 3.
+3. Helius credits: 4,740 used after day 1 (2026-09-20), in line with the estimate. Look again once a week.
 4. Coverage test: long-tail candidates (both pool types, TVL $10-50K, modest volume, SPL Token, freeze disabled) from
    dlmm.datapi.meteora.ag / damm-v2.datapi.meteora.ag; reconcile probe on idle windows; the same depth tools apply once pools join the watchlist.
 5. Week 1 tasks 7-9, then the Week 1 review on 2026-09-26 (D14).
