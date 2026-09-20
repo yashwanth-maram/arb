@@ -3,9 +3,10 @@ import type { PoolState } from "@meteora-ag/cp-amm-sdk";
 import { decodeDlmmRaw, decodeBinArray, decodeBitmapExtension } from "../decoders/meteora_dlmm";
 import { decodeDammV2Raw } from "../decoders/meteora_damm_v2";
 import type { DlmmQuoteState } from "./dlmm";
+import type { RawAccount, RawSnapshot } from "./fetch_depth";
 import type { Clock } from "./types";
 
-/** A depth snapshot file (written by `npm run snapshot`) decoded into ready-to-quote pool states, keyed by watchlist label. */
+/** A depth snapshot decoded into ready-to-quote pool states, keyed by watchlist label. */
 export type DepthSnapshot = {
   slot: number;
   fetchedAt: string;
@@ -16,11 +17,9 @@ export type DepthSnapshot = {
   damm: Map<string, { address: string; state: PoolState }>;
 };
 
-type SnapshotAccount = { kind: string; label: string; address: string; index?: number; missing?: boolean; dataBase64?: string };
-
-export function loadDepthSnapshot(path: string): DepthSnapshot {
-  const file = JSON.parse(readFileSync(path, "utf8")) as { slot: number; fetchedAt: string; accounts: SnapshotAccount[] };
-  const bytes = (a: SnapshotAccount) => Buffer.from(a.dataBase64 ?? "", "base64");
+/** Decode a snapshot held in memory (fresh from the network, or parsed from a file). */
+export function decodeDepthSnapshot(file: RawSnapshot): DepthSnapshot {
+  const bytes = (a: RawAccount) => Buffer.from(a.dataBase64 ?? "", "base64");
   const out: DepthSnapshot = {
     slot: file.slot,
     fetchedAt: file.fetchedAt,
@@ -41,4 +40,9 @@ export function loadDepthSnapshot(path: string): DepthSnapshot {
     if (a.kind === "bitmap_ext" && pool) pool.bitmapExtension = decodeBitmapExtension(bytes(a));
   }
   return out;
+}
+
+/** Decode a snapshot file written by `npm run snapshot`. */
+export function loadDepthSnapshot(path: string): DepthSnapshot {
+  return decodeDepthSnapshot(JSON.parse(readFileSync(path, "utf8")) as RawSnapshot);
 }
