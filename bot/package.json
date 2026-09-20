@@ -17,7 +17,9 @@
     "fixtures": "tsx src/fetch_fixtures.ts",
     "depth": "tsx src/depth.ts",
     "snapshot": "tsx src/fetch_depth_snapshot.ts",
-    "depthprobe": "tsx src/probe_once.ts"
+    "depthprobe": "tsx src/probe_once.ts",
+    "candidates": "tsx src/research/find_candidates.ts",
+    "candidates:depth": "tsx src/research/depth_candidates.ts"
   },
   "keywords": [],
   "author": "",
