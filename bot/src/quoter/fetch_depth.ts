@@ -1,5 +1,5 @@
 import { Connection, PublicKey } from "@solana/web3.js";
-import { WATCHLIST, WSOL } from "../config/watchlist";
+import { WATCHLIST, WSOL, type PoolCfg } from "../config/watchlist";
 import { decodeDlmmRaw, decodeBitmapExtension } from "../decoders/meteora_dlmm";
 import { decodeDammV2Raw } from "../decoders/meteora_damm_v2";
 import { binArrayAddress, binArrayIndexesBothWays, bitmapExtensionAddress } from "./dlmm_accounts";
@@ -16,10 +16,10 @@ type Want = { kind: AccountKind; label: string; address: string; index?: number 
 const short = (s: string) => `${s.slice(0, 4)}...${s.slice(-4)}`;
 
 /** From the pool accounts, work out every other account the quotes need. */
-function wantedAccounts(poolData: Map<string, Buffer>, extData: Map<string, Buffer | null>, arraysPerSide: number): Want[] {
+function wantedAccounts(pools: PoolCfg[], poolData: Map<string, Buffer>, extData: Map<string, Buffer | null>, arraysPerSide: number): Want[] {
   const wants: Want[] = [];
   const mints = new Set<string>();
-  for (const p of WATCHLIST) {
+  for (const p of pools) {
     const data = poolData.get(p.address);
     if (!data) throw new Error(`${p.label} account not found`);
     wants.push({ kind: p.venue === "dlmm" ? "dlmm_pool" : "damm_pool", label: p.label, address: p.address });
@@ -41,14 +41,14 @@ function wantedAccounts(poolData: Map<string, Buffer>, extData: Map<string, Buff
 }
 
 /**
- * Everything a depth-aware quote needs for the watchlist, read at ONE slot: each pool, the bin arrays a DLMM swap
+ * Everything a depth-aware quote needs for a list of pools (the watchlist by default), read at ONE slot: each pool, the bin arrays a DLMM swap
  * could walk (arraysPerSide each way), each DLMM pool's bitmap extension, and the mints. Two passes: pools first,
  * to learn which bin arrays to ask for; then everything in one request. If a pool moved far enough in between to
  * need another bin array, ask again with the fresh state (a few tries at most).
  */
-export async function fetchDepthSnapshot(conn: Connection, arraysPerSide = 3, say: (msg: string) => void = () => {}): Promise<RawSnapshot> {
-  const dlmmPools = WATCHLIST.filter((p) => p.venue === "dlmm");
-  const poolKeys = WATCHLIST.map((p) => p.address);
+export async function fetchDepthSnapshot(conn: Connection, arraysPerSide = 3, say: (msg: string) => void = () => {}, pools: PoolCfg[] = WATCHLIST): Promise<RawSnapshot> {
+  const dlmmPools = pools.filter((p) => p.venue === "dlmm");
+  const poolKeys = pools.map((p) => p.address);
   const extKeys = dlmmPools.map((p) => bitmapExtensionAddress(new PublicKey(p.address)).toBase58());
 
   const first = await conn.getMultipleAccountsInfo([...poolKeys, ...extKeys].map((k) => new PublicKey(k)));
@@ -57,7 +57,7 @@ export async function fetchDepthSnapshot(conn: Connection, arraysPerSide = 3, sa
   poolKeys.forEach((k, i) => { if (first[i]) poolData.set(k, Buffer.from(first[i]!.data)); });
   extKeys.forEach((k, i) => { const info = first[poolKeys.length + i]; extData.set(k, info ? Buffer.from(info.data) : null); });
 
-  let wants = wantedAccounts(poolData, extData, arraysPerSide);
+  let wants = wantedAccounts(pools, poolData, extData, arraysPerSide);
   for (let attempt = 1; ; attempt++) {
     const { context, value } = await conn.getMultipleAccountsInfoAndContext(wants.map((w) => new PublicKey(w.address)));
     const byAddress = new Map(wants.map((w, i) => [w.address, value[i]] as const));
@@ -65,7 +65,7 @@ export async function fetchDepthSnapshot(conn: Connection, arraysPerSide = 3, sa
     extData = new Map<string, Buffer | null>();
     for (const k of poolKeys) { const info = byAddress.get(k); if (info) poolData.set(k, Buffer.from(info.data)); }
     for (const k of extKeys) { const info = byAddress.get(k); extData.set(k, info ? Buffer.from(info.data) : null); }
-    const fresh = wantedAccounts(poolData, extData, arraysPerSide);
+    const fresh = wantedAccounts(pools, poolData, extData, arraysPerSide);
     const stillNeeded = fresh.filter((w) => !byAddress.has(w.address));
     if (stillNeeded.length > 0) {
       if (attempt >= 4) throw new Error(`pools kept moving: still missing ${stillNeeded.map((m) => `${m.label} #${m.index}`).join(", ")}`);
