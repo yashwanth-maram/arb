@@ -17,7 +17,9 @@ type SwapIxResponse = {
   setupInstructions?: JupIx[]; swapInstruction: JupIx; cleanupInstruction?: JupIx | null; otherInstructions?: JupIx[];
   addressLookupTableAddresses?: string[]; addressesByLookupTableAddress?: Record<string, string[]> | null;
 };
-export type WeldOptions = { base?: string; maxAccounts?: number; slippageBps?: number; computeUnitPriceMicroLamports?: number; connection?: Connection };
+export type WeldOptions = { base?: string; maxAccounts?: number; slippageBps?: number; computeUnitPriceMicroLamports?: number; connection?: Connection;
+  /** Leave the final unwrap out. The wrapped-SOL account then survives, so a simulation can read what came back. */
+  keepWsolAccount?: boolean };
 // Without a lookup table every account costs 32 bytes, so two legs fit only up to about 30 accounts in total.
 // Routes differ per token, so try progressively narrower routes rather than guessing one width for all of them.
 export const MAX_ACCOUNTS_LADDER = [14, 12, 10, 8];
@@ -77,7 +79,8 @@ async function buildAt(tokenMint: string, sizeLamports: number, user: PublicKey,
   // Order: wrap SOL and open token accounts, buy, sell, then unwrap everything back to SOL. The first leg's own
   // clean-up is left out (it would close the wrapped-SOL account the second leg pays into), and steps both legs ask
   // for, such as opening the same token account, are kept once.
-  const wanted: JupIx[] = [...(a.setupInstructions ?? []), a.swapInstruction, ...(b.setupInstructions ?? []), b.swapInstruction, ...(b.cleanupInstruction ? [b.cleanupInstruction] : [])];
+  const cleanup = opts.keepWsolAccount ? [] : (b.cleanupInstruction ? [b.cleanupInstruction] : []);
+  const wanted: JupIx[] = [...(a.setupInstructions ?? []), a.swapInstruction, ...(b.setupInstructions ?? []), b.swapInstruction, ...cleanup];
   const seen = new Set<string>();
   const kept = wanted.filter((ix) => (seen.has(ixKey(ix)) ? false : (seen.add(ixKey(ix)), true)));
   const instructions = [

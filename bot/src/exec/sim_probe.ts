@@ -44,12 +44,16 @@ async function main() {
 
   for (const [name, mint] of TOKENS) {
     try {
-      const w = await buildWeldedTrade(mint, Math.round(SIZE_SOL * 1e9), payer, { connection: conn });
+      // keepWsolAccount: without it the clean-up closes the very account we measure, and the result is unreadable.
+      const w = await buildWeldedTrade(mint, Math.round(SIZE_SOL * 1e9), payer, { connection: conn, keepWsolAccount: true });
       console.log(`${name}  buy ${w.buyVia.join("+")} -> sell ${w.sellVia.join("+")}`);
       console.log(`   built at ${w.maxAccountsUsed} accounts a leg [${w.attempts.join(" ")}], ${w.sizeBytes}/${TX_SIZE_LIMIT} bytes, quoted ${w.netPct >= 0 ? "+" : ""}${w.netPct.toFixed(4)}%`);
       const s = await simulateWelded(conn, w, payer);
+      if (process.env.VERBOSE) console.log(`   measuring account ${s.wsolAccount}`);
       if (s.ok) {
-        console.log(`   SIMULATED OK at slot ${s.slot}: ${sol(s.lamportsBefore)} -> ${sol(s.lamportsAfter)} SOL, change ${s.lamportsDelta! >= 0 ? "+" : ""}${sol(s.lamportsDelta)} (${s.netPctSimulated!.toFixed(4)}% of size), ${s.unitsConsumed} compute units`);
+        const measured = s.wsolDelta === null ? "the account was closed by the clean-up, so no closing balance was returned"
+          : `wrapped SOL ${sol(s.wsolBefore)} -> ${sol(s.wsolAfter)}, change ${s.wsolDelta >= 0 ? "+" : ""}${sol(s.wsolDelta)} SOL (${s.netPctSimulated!.toFixed(4)}% of size)`;
+        console.log(`   SIMULATED OK at slot ${s.slot}: ${measured}, ${s.unitsConsumed} compute units`);
       } else if (s.slippageRejected) {
         console.log(`   CANCELLED by the profit check at slot ${s.slot} (a swap would have paid less than its quote). This is the safety working.`);
       } else if (s.underfunded) {

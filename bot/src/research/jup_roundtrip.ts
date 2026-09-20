@@ -2,7 +2,9 @@ import http from "node:http";
 import https from "node:https";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { Connection, PublicKey } from "@solana/web3.js";
 import { WSOL } from "../config/watchlist";
+import { ShadowGate, shadowRun, type ShadowConfig } from "../exec/shadow";
 
 // Usage: npm run jup            (free: Jupiter's public endpoint, no key, no Helius credits)
 // The whole-market test. Jupiter routes across every Solana venue and its quote returns the REAL output amount,
@@ -28,6 +30,13 @@ const TOKENS_FILE = join(LOG_DIR, "jup", "tokens.json");
 const TOKENS_MAX_AGE_H = Number(process.env.TOKENS_MAX_AGE_H ?? 12);
 const DLMM_API = process.env.DLMM_API ?? "https://dlmm.datapi.meteora.ag";
 const DAMM_API = process.env.DAMM_API ?? "https://damm-v2.datapi.meteora.ag";
+// Shadow execution: when a round trip comes back above zero, build the real two-swap transaction and run it against
+// live chain state. Nothing is signed or sent. About 2 Helius credits a shot, so it is capped per hour.
+const SHADOW = process.env.SHADOW !== "0";
+const SHADOW_PAYER = process.env.SIM_PAYER ?? "";           // a funded PUBLIC address standing in for a wallet
+const SHADOW_MAX_PER_HOUR = Number(process.env.SHADOW_MAX_PER_HOUR ?? 60);
+const SHADOW_MIN_INTERVAL_MS = Number(process.env.SHADOW_MIN_INTERVAL_MS ?? 5_000);
+const SHADOW_SIZE_CAP_SOL = Number(process.env.SHADOW_SIZE_CAP_SOL ?? 2);  // wider routes will not fit one transaction
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const logPath = () => join(LOG_DIR, `jupiter-${new Date().toISOString().slice(0, 10)}.jsonl`);
@@ -140,10 +149,21 @@ async function main() {
   mkdirSync(LOG_DIR, { recursive: true });
   const tokens = await loadTokens();
   if (tokens.length === 0) { console.error("no tokens to sweep"); process.exit(1); }
-  console.log(writeLine({ t: "start", pid: process.pid, base: BASE, keyed: !!KEY, reqPerMin: REQ_PER_MIN, tokens: tokens.length, baseSizeSol: BASE_SIZE, tipLamports: TIP_LAMPORTS }));
+  let shadowCfg: ShadowConfig | null = null;
+  let conn: Connection | null = null;
+  const shadowGate = new ShadowGate({ maxPerHour: SHADOW_MAX_PER_HOUR, minIntervalMs: SHADOW_MIN_INTERVAL_MS });
+  if (SHADOW) {
+    try { process.loadEnvFile(".env"); } catch { /* .env optional */ }
+    const rpc = process.env.RPC_HTTP ?? (process.env.HELIUS_API_KEY ? `https://mainnet.helius-rpc.com/?api-key=${process.env.HELIUS_API_KEY}` : "");
+    if (!rpc) console.log("shadow off: no RPC (set HELIUS_API_KEY in bot/.env, or SHADOW=0 to silence this)");
+    else if (!SHADOW_PAYER) console.log("shadow off: no SIM_PAYER (run `npm run exec:payer` to find one)");
+    else { conn = new Connection(rpc, "processed"); shadowCfg = { payer: new PublicKey(SHADOW_PAYER), maxPerHour: SHADOW_MAX_PER_HOUR, minIntervalMs: SHADOW_MIN_INTERVAL_MS, sizeCapSol: SHADOW_SIZE_CAP_SOL }; }
+  }
+  console.log(writeLine({ t: "start", pid: process.pid, base: BASE, keyed: !!KEY, reqPerMin: REQ_PER_MIN, tokens: tokens.length, baseSizeSol: BASE_SIZE, tipLamports: TIP_LAMPORTS, shadow: !!shadowCfg, shadowMaxPerHour: SHADOW_MAX_PER_HOUR }));
   console.log(`sweeping ${tokens.length} tokens at ${BASE_SIZE} SOL, about ${(tokens.length * 2 * 60 / REQ_PER_MIN / 60).toFixed(1)} min per sweep; anything above ${FOLLOWUP_PCT}% is re-tested at ${FOLLOWUP_SIZES.join(", ")} SOL`);
 
   let sweep = 0, trips = 0, errors = 0, hits = 0;
+  const shadowTally: Record<string, number> = {};
   let best = { profitAfterFeesSol: -Infinity, netPct: 0, symbol: "", sizeSol: 0, ts: "" };
   for (;;) {
     sweep++;
@@ -174,6 +194,14 @@ async function main() {
               writeLine({ t: "confirm", sym: t.symbol, sizeSol, firstPct: +r.netPct.toFixed(4), againPct: +again.netPct.toFixed(4), againProfitAfterFeesSol: +again.profitAfterFeesSol.toFixed(9), buySlot: again.buySlot, sellSlot: again.sellSlot, legGapMs: again.legGapMs, sweep });
               console.log(`     re-check: ${again.netPct > 0 ? "still" : "gone"} ${again.netPct.toFixed(4)}%  (${again.profitAfterFeesSol.toFixed(6)} SOL after costs)`);
             } catch (e) { writeLine({ t: "confirm_err", sym: t.symbol, sizeSol, msg: (e as Error).message.slice(0, 160) }); }
+            // The question a quote cannot answer: would it actually have worked on chain?
+            if (shadowCfg && conn && shadowGate.tryStart()) {
+              const sh = await shadowRun(conn, t.mint, sizeSol, shadowCfg);
+              shadowTally[sh.verdict] = (shadowTally[sh.verdict] ?? 0) + 1;
+              writeLine({ t: "shadow", sym: t.symbol, mint: t.mint, sizeSol, ...sh, sweep });
+              const measured = sh.simulatedPct === null ? "" : `, measured ${sh.simulatedPct >= 0 ? "+" : ""}${sh.simulatedPct.toFixed(4)}%`;
+              console.log(`     shadow: ${sh.verdict}${measured}  (${sh.sizeBytes ?? "-"} bytes, ${sh.computeUnits ?? "-"} CU, ${sh.ms} ms)${sh.err && sh.verdict !== "cancelled_by_profit_check" ? `  ${sh.err}` : ""}`);
+            }
           }
           // A near miss at the base size earns the size ladder: the gap is fixed in percent, the costs are fixed in SOL.
           if (i === 0 && r.netPct > FOLLOWUP_PCT) sizes.push(...FOLLOWUP_SIZES);
@@ -191,6 +219,7 @@ async function main() {
     const above = (x: number) => sorted.filter((n) => n.netPct > x).length;
     console.log(writeLine({
       t: "sweep", sweep, minutes: +mins.toFixed(1), tripsThisSweep: nets.length, trips, hits, errors,
+      shadow: { ...shadowTally, started: shadowGate.started, skipped: shadowGate.skipped },
       counts: { above0: above(0), aboveMinus025: above(-0.25), aboveMinus05: above(-0.5),
         afterCostsAbove0: sorted.filter((n) => n.profitAfterFeesSol > 0).length, sameSlot: nets.filter((n) => n.slotGap === 0).length },
       top: sorted.slice(0, 5).map((n) => ({ sym: n.sym, sizeSol: n.sizeSol, netPct: +n.netPct.toFixed(4), profitAfterFeesSol: +n.profitAfterFeesSol.toFixed(9) })),
