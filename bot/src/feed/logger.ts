@@ -5,6 +5,7 @@ import { decodeDlmmPool } from "../decoders/meteora_dlmm";
 import { decodeDammV2Pool } from "../decoders/meteora_damm_v2";
 import { WATCHLIST, MAX_FEE_BPS, WSOL, type PoolCfg } from "../config/watchlist";
 import { bestPair, type PoolSnap } from "../scanner/best_pair";
+import { ProbeGate, bestPairAtBaseFees, probeToken } from "./probe";
 
 // ---- configuration (env) ----------------------------------------------------------------
 try { process.loadEnvFile(".env"); } catch { /* .env optional if the variables are set another way */ }
@@ -17,6 +18,12 @@ const HEARTBEAT_SECONDS = Number(process.env.HEARTBEAT_SECONDS ?? 60);
 const STALE_SECONDS = Number(process.env.STALE_SECONDS ?? 15);     // no slot update for this long -> exit, the supervisor starts a fresh process
 const STARTUP_SECONDS = Number(process.env.STARTUP_SECONDS ?? 60); // the first connect may take this long before we give up the same way
 const RUN_SECONDS = Number(process.env.RUN_SECONDS ?? 0);          // 0 = run forever
+// Depth probes (src/feed/probe.ts): one HTTP read of a token's pools and bin arrays when its headline net, at base
+// fees, rises above PROBE_THRESHOLD percent. 1 Helius credit each. PROBES=0 switches them off.
+const PROBES = process.env.PROBES !== "0";
+const PROBE_THRESHOLD = Number(process.env.PROBE_THRESHOLD ?? -0.25);
+const PROBE_MIN_INTERVAL_MS = Number(process.env.PROBE_MIN_INTERVAL_MS ?? 2000); // per token
+const PROBE_MAX_PER_HOUR = Number(process.env.PROBE_MAX_PER_HOUR ?? 300);       // budget: at most 7,200 credits a day
 
 // ---- log file ---------------------------------------------------------------------------
 mkdirSync(LOG_DIR, { recursive: true });
@@ -29,7 +36,11 @@ function writeLine(obj: Record<string, unknown>) {
 
 // ---- state ------------------------------------------------------------------------------
 const decimalsByMint = new Map<string, number>();
-const snapsByToken = new Map<string, Map<string, PoolSnap>>();   // token -> label -> latest snapshot
+type Snap = PoolSnap & { baseFeeBps: number };
+const snapsByToken = new Map<string, Map<string, Snap>>();       // token -> label -> latest snapshot
+const latestData = new Map<string, Buffer>();                    // label -> newest account bytes (tells a probe which bin arrays to read)
+const gate = new ProbeGate({ thresholdPct: PROBE_THRESHOLD, minIntervalMs: PROBE_MIN_INTERVAL_MS, maxPerHour: PROBE_MAX_PER_HOUR });
+let probeConn: Connection | null = null;
 const counts = new Map<string, number>(WATCHLIST.map((p) => [p.label, 0]));
 let currentSlot = 0;
 let lastSlotAt = Date.now();
@@ -37,19 +48,19 @@ let updates = 0;
 let opportunities = 0;
 const startedAt = Date.now();
 
-type Decoded = { price: number; feeBps: number; mints: [string, string] };
+type Decoded = { price: number; feeBps: number; baseFeeBps: number; mints: [string, string] };
 
 function decodePrice(pool: PoolCfg, data: Buffer): Decoded {
   if (pool.venue === "dlmm") {
     const probe = decodeDlmmPool(pool.address, data, 0, 0);
     const [mx, my] = [probe.tokenXMint, probe.tokenYMint];
     const s = decodeDlmmPool(pool.address, data, decimalsByMint.get(mx) ?? 0, decimalsByMint.get(my) ?? 0);
-    return { price: mx === WSOL ? 1 / s.price : s.price, feeBps: s.totalFeeBps, mints: [mx, my] };
+    return { price: mx === WSOL ? 1 / s.price : s.price, feeBps: s.totalFeeBps, baseFeeBps: s.baseFeeBps, mints: [mx, my] };
   }
   const probe = decodeDammV2Pool(pool.address, data, 0, 0);
   const [ma, mb] = [probe.tokenAMint, probe.tokenBMint];
   const s = decodeDammV2Pool(pool.address, data, decimalsByMint.get(ma) ?? 0, decimalsByMint.get(mb) ?? 0);
-  return { price: ma === WSOL ? 1 / s.price : s.price, feeBps: s.totalFeeBps, mints: [ma, mb] };
+  return { price: ma === WSOL ? 1 / s.price : s.price, feeBps: s.totalFeeBps, baseFeeBps: s.baseFeeBpsMin, mints: [ma, mb] };
 }
 
 async function loadDecimals(conn: Connection, mints: string[]) {
@@ -62,13 +73,30 @@ async function loadDecimals(conn: Connection, mints: string[]) {
   });
 }
 
+// Headline prices say a trade may be near: look at the real liquidity once, without holding up the feed.
+function maybeProbe(token: string, trigSlot: number, snaps: Map<string, Snap>, netStored: number | null) {
+  if (!PROBES || !probeConn) return;
+  const trig = bestPairAtBaseFees(snaps, MAX_FEE_BPS);
+  if (!trig || !gate.tryStart(token, trig.netPct, Date.now())) return;
+  probeToken(probeConn, token, latestData)
+    .then((r) => writeLine({
+      t: "probe", token, trigSlot, slot: r.slot, ms: r.ms, accounts: r.accounts, kb: r.kb,
+      trig: { a: trig.a, b: trig.b, dir: trig.direction, netBase: +trig.netPct.toFixed(4), net: netStored === null ? null : +netStored.toFixed(4) },
+      best: r.best, ...(r.unfilled ? { unfilled: r.unfilled } : {}), ...(r.note ? { note: r.note } : {}),
+    }))
+    .catch((e) => writeLine({ t: "probe_error", token, trigSlot, msg: (e as Error).message }))
+    .finally(() => gate.done(token));
+}
+
 function record(pool: PoolCfg, data: Buffer, slot: number, source: "baseline" | "update") {
-  const { price, feeBps } = decodePrice(pool, data);
-  const snaps = snapsByToken.get(pool.token) ?? new Map<string, PoolSnap>();
+  const { price, feeBps, baseFeeBps } = decodePrice(pool, data);
+  const snaps = snapsByToken.get(pool.token) ?? new Map<string, Snap>();
   snapsByToken.set(pool.token, snaps);
   const prev = snaps.get(pool.label);
-  snaps.set(pool.label, { price, feeBps, slot, ts: Date.now() });
+  snaps.set(pool.label, { price, feeBps, baseFeeBps, slot, ts: Date.now() });
+  latestData.set(pool.label, data);
   const best = bestPair(snaps, MAX_FEE_BPS);
+  if (source === "update") maybeProbe(pool.token, slot, snaps, best ? best.netPct : null);
   const changed = !prev || prev.price !== price;
   if (best && best.netPct > 0) opportunities++;
   const snapshot: Record<string, [number, number, number]> = {};
@@ -103,6 +131,7 @@ async function connect(): Promise<Live> {
   await loadDecimals(conn, [...mints]);
   value.forEach((info, i) => record(WATCHLIST[i], Buffer.from(info!.data), context.slot, "baseline"));
 
+  probeConn = conn;
   const slotSub = conn.onSlotChange((s) => { currentSlot = s.slot; lastSlotAt = Date.now(); });
   const subs = WATCHLIST.map((pool) =>
     conn.onAccountChange(new PublicKey(pool.address), (info, ctx) => {
@@ -161,7 +190,7 @@ async function main() {
   setInterval(() => {
     const line = writeLine({
       t: "hb", slot: currentSlot, uptimeSec: Math.round((Date.now() - startedAt) / 1000),
-      updates, opportunities, counts: Object.fromEntries(counts),
+      updates, opportunities, probes: gate.started, probeSkips: gate.skippedByBudget, counts: Object.fromEntries(counts),
       staleSec: Math.round((Date.now() - lastSlotAt) / 1000),
     });
     console.log(line);

@@ -3,7 +3,8 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { PublicKey } from "@solana/web3.js";
 import { MAX_FEE_BPS, WATCHLIST } from "../src/config/watchlist";
-import { ProbeGate, bestPairAtBaseFees, probeToken } from "../src/feed/probe";
+import { decodeDlmmRaw } from "../src/decoders/meteora_dlmm";
+import { ProbeGate, bestPairAtBaseFees, probeArrayIndexes, probeToken } from "../src/feed/probe";
 
 describe("probe gate", () => {
   const gate = () => new ProbeGate({ thresholdPct: -0.25, minIntervalMs: 2000, maxPerHour: 3 });
@@ -66,13 +67,22 @@ describe("probe on the snapshot (slot 448478047)", () => {
   const latest = new Map<string, Buffer>(WATCHLIST.map((p) => [p.label, Buffer.from(byAddress.get(p.address).dataBase64, "base64")]));
 
   it("reads the eligible pools and their nearby bin arrays in one request, and reports the best round trip per size", async () => {
-    const r = await probeToken(conn, "PEPE", latest, Date.parse(file.fetchedAt));
+    const r = await probeToken(conn, "PEPE", latest, { nowMs: Date.parse(file.fetchedAt) });
     expect(r.slot).toBe(448478047);
-    expect(r.accounts).toBe(8); // 3 eligible pools (damm1 left out) + bin arrays -11,-10 (dlmm80) and -41,-40,-39 (dlmm20)
+    expect(r.accounts).toBe(7); // 3 eligible pools (damm1 left out) + bin arrays -11,-10 (dlmm80) and -41,-40 (dlmm20)
+    expect(r.kb).toBe(42);      // 4 bin arrays of 10,136 bytes + 3 pool accounts
+    expect(r.unfilled).toBeUndefined();
     expect(asked).not.toContain("GRNVafZv78DndVua7phP9BFGmmFxJ9r58wBEakDyfsCg");
     expect(r.best["0.001"]).toEqual({ net: -0.8552, buy: "PEPE dlmm20", sell: "PEPE dlmm80" });
     expect(r.best["2"]).toEqual({ net: -0.9295, buy: "PEPE dlmm20", sell: "PEPE dlmm80" });
     expect(r.note).toBeUndefined();
+  });
+
+  it("reads the neighbouring bin array only on the side where the active bin is close to the edge", () => {
+    // dlmm20: active bin -2790 sits 10 bins above the bottom of array -40 (-2800..-2731) and 59 below its top.
+    expect(probeArrayIndexes(decodeDlmmRaw(latest.get("PEPE dlmm20")!))).toEqual([-41, -40]);
+    // PERPSPAD dlmm80: active bin -394 sits 26 above the bottom of array -6 (-420..-351) and 43 below its top.
+    expect(probeArrayIndexes(decodeDlmmRaw(latest.get("PERPSPAD dlmm80")!))).toEqual([-6]);
   });
 
   it("leaves a pool out when it has moved beyond the bin arrays that were fetched", async () => {
@@ -81,7 +91,7 @@ describe("probe on the snapshot (slot 448478047)", () => {
       res.value = res.value.map((v: any, i: number) => (asked[i] === "GRS6QUuzCiSQjRS33ZDcTKR27nz9chuUduVc917dfAno" ? null : v)); // dlmm20's active bin array -40
       return res;
     } } as any;
-    const r = await probeToken(holey, "PEPE", latest, Date.parse(file.fetchedAt));
+    const r = await probeToken(holey, "PEPE", latest, { nowMs: Date.parse(file.fetchedAt) });
     expect(r.note).toMatch(/1 pool\(s\) moved/);
     expect(r.best["0.1"].buy).not.toBe("PEPE dlmm20");
     expect(r.best["0.1"].sell).not.toBe("PEPE dlmm20");
