@@ -20,7 +20,9 @@
     "depthprobe": "tsx src/probe_once.ts",
     "candidates": "tsx src/research/find_candidates.ts",
     "candidates:depth": "tsx src/research/depth_candidates.ts",
-    "jup": "tsx src/research/jup_roundtrip.ts"
+    "jup": "tsx src/research/jup_roundtrip.ts",
+    "exec:probe": "tsx src/exec/probe_swap_ix.ts",
+    "exec:weld": "tsx src/exec/weld_probe.ts"
   },
   "keywords": [],
   "author": "",
