@@ -14,7 +14,8 @@ const HTTP = process.env.RPC_HTTP ?? `https://mainnet.helius-rpc.com/?api-key=${
 const WS = process.env.RPC_WS ?? `wss://mainnet.helius-rpc.com/?api-key=${KEY}`;
 const LOG_DIR = process.env.LOG_DIR ?? "logs";
 const HEARTBEAT_SECONDS = Number(process.env.HEARTBEAT_SECONDS ?? 60);
-const STALE_SECONDS = Number(process.env.STALE_SECONDS ?? 15);     // no slot update for this long -> reconnect
+const STALE_SECONDS = Number(process.env.STALE_SECONDS ?? 15);     // no slot update for this long -> exit, the supervisor starts a fresh process
+const STARTUP_SECONDS = Number(process.env.STARTUP_SECONDS ?? 60); // the first connect may take this long before we give up the same way
 const RUN_SECONDS = Number(process.env.RUN_SECONDS ?? 0);          // 0 = run forever
 
 // ---- log file ---------------------------------------------------------------------------
@@ -32,7 +33,6 @@ const snapsByToken = new Map<string, Map<string, PoolSnap>>();   // token -> lab
 const counts = new Map<string, number>(WATCHLIST.map((p) => [p.label, 0]));
 let currentSlot = 0;
 let lastSlotAt = Date.now();
-let reconnects = 0;
 let updates = 0;
 let opportunities = 0;
 const startedAt = Date.now();
@@ -117,7 +117,7 @@ async function connect(): Promise<Live> {
     }, "processed"),
   );
   console.log(`${new Date().toISOString()} connected slot ${currentSlot}, ${WATCHLIST.length} pools, decimals ${JSON.stringify(Object.fromEntries(decimalsByMint))}`);
-  writeLine({ t: "connect", slot: currentSlot, pools: WATCHLIST.length, reconnects });
+  writeLine({ t: "connect", slot: currentSlot, pools: WATCHLIST.length });
   return { conn, subs, slotSub };
 }
 
@@ -129,45 +129,43 @@ async function teardown(live: Live) {
 }
 
 async function main() {
-  let live = await connect();
+  writeLine({ t: "start", pid: process.pid });
+  let live: Live | null = null;
 
-  const heartbeat = setInterval(() => {
-    const line = writeLine({
-      t: "hb", slot: currentSlot, uptimeSec: Math.round((Date.now() - startedAt) / 1000),
-      updates, opportunities, reconnects, counts: Object.fromEntries(counts),
-      staleSec: Math.round((Date.now() - lastSlotAt) / 1000),
-    });
-    console.log(line);
-  }, HEARTBEAT_SECONDS * 1000);
-
-    let reconnecting = false;
-  const watchdog = setInterval(async () => {
-    if (reconnecting || Date.now() - lastSlotAt < STALE_SECONDS * 1000) return;
-    reconnecting = true;
-    reconnects++;
-    const msg = writeLine({ t: "reconnect", reason: `no slot update for ${STALE_SECONDS}s`, reconnects });
-    console.log(msg);
-    try { await teardown(live); } catch { /* best effort */ }
-    try {
-      live = await connect();
-    } catch (e) {
-      writeLine({ t: "error", msg: `reconnect failed: ${(e as Error).message}` });
-      lastSlotAt = Date.now() - (STALE_SECONDS - 10) * 1000; // retry in ~10 s
-    } finally {
-      reconnecting = false;
-    }
-  }, 5000);
+  // Watchdog, crash-only. The feed must keep moving: slots arrive every 0.4 s. If none arrives for STALE_SECONDS
+  // (or the first connect takes longer than STARTUP_SECONDS), write one line and exit with code 2. The supervisor
+  // (ops/run_logger.sh) starts a fresh process a few seconds later. A fresh process cannot inherit a half-dead
+  // socket or a promise that never settles; an in-process reconnect can, and did: on 2026-09-20 closing the dead
+  // connection never returned, every later reconnect was blocked, and the logger sat deaf for 3 h 48 min.
+  // It starts before the first connect, so a connect that hangs is covered too. Nothing in it waits on the network.
+  setInterval(() => {
+    const staleSec = (Date.now() - lastSlotAt) / 1000;
+    if (staleSec < (live ? STALE_SECONDS : STARTUP_SECONDS)) return;
+    console.log(writeLine({ t: "stale_exit", phase: live ? "running" : "startup", staleSec: Math.round(staleSec), slot: currentSlot, updates }));
+    process.exit(2);
+  }, 1000);
 
   const stop = async (why: string) => {
-    clearInterval(heartbeat); clearInterval(watchdog);
-    const line = writeLine({ t: "stop", why, updates, opportunities, reconnects, uptimeSec: Math.round((Date.now() - startedAt) / 1000) });
-    console.log(line);
-    try { await teardown(live); } catch { /* best effort */ }
+    console.log(writeLine({ t: "stop", why, updates, opportunities, uptimeSec: Math.round((Date.now() - startedAt) / 1000) }));
+    setTimeout(() => process.exit(0), 2000); // unsubscribing politely must never keep us alive
+    try { if (live) await teardown(live); } catch { /* best effort */ }
     process.exit(0);
   };
   process.on("SIGINT", () => stop("SIGINT"));
   process.on("SIGTERM", () => stop("SIGTERM"));
   if (RUN_SECONDS > 0) setTimeout(() => stop(`RUN_SECONDS=${RUN_SECONDS}`), RUN_SECONDS * 1000);
+
+  live = await connect();
+  lastSlotAt = Date.now(); // the subscriptions get STALE_SECONDS from here to deliver their first slot
+
+  setInterval(() => {
+    const line = writeLine({
+      t: "hb", slot: currentSlot, uptimeSec: Math.round((Date.now() - startedAt) / 1000),
+      updates, opportunities, counts: Object.fromEntries(counts),
+      staleSec: Math.round((Date.now() - lastSlotAt) / 1000),
+    });
+    console.log(line);
+  }, HEARTBEAT_SECONDS * 1000);
 }
 
 main().catch((e) => { console.error(e); writeLine({ t: "fatal", msg: (e as Error).message }); process.exit(1); });
