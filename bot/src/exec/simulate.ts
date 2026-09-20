@@ -61,7 +61,9 @@ export async function simulateWelded(conn: Connection, w: Welded, payer: PublicK
   const haystack = [err ?? "", ...logs].join("\n");
   const raw: string | undefined = v.accounts?.[0]?.data?.[0];
   const after = raw === undefined ? null : tokenAmount(Buffer.from(raw, "base64"));
-  const delta = after === null || before === null ? null : after - before;
+  // The trade WRAPS its input into this account, swaps twice, then leaves the proceeds here. So the balance grows by
+  // the whole trade size plus whatever the round trip made or lost. Subtract the size to get the result itself.
+  const delta = after === null || before === null ? null : after - before - w.sizeLamports;
   return {
     ok: !v.err,
     err,
