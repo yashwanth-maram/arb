@@ -31,7 +31,8 @@
     "exec:ladder": "tsx src/exec/ladder_probe.ts",
     "exec:dump": "tsx src/exec/dump_tx.ts",
     "diverge": "tsx src/research/divergence_watch.ts",
-    "triangle": "tsx src/research/triangle.ts"
+    "triangle": "tsx src/research/triangle.ts",
+    "newpool": "tsx src/research/newpool_lag.ts"
   },
   "keywords": [],
   "author": "",
