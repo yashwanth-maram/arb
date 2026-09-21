@@ -32,7 +32,8 @@
     "exec:dump": "tsx src/exec/dump_tx.ts",
     "diverge": "tsx src/research/divergence_watch.ts",
     "triangle": "tsx src/research/triangle.ts",
-    "newpool": "tsx src/research/newpool_lag.ts"
+    "newpool": "tsx src/research/newpool_lag.ts",
+    "newborn": "tsx src/research/newborn.ts"
   },
   "keywords": [],
   "author": "",
