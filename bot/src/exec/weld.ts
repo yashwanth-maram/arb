@@ -19,7 +19,10 @@ type SwapIxResponse = {
 };
 export type WeldOptions = { base?: string; maxAccounts?: number; slippageBps?: number; computeUnitPriceMicroLamports?: number; connection?: Connection;
   /** Leave the final unwrap out. The wrapped-SOL account then survives, so a simulation can read what came back. */
-  keepWsolAccount?: boolean };
+  keepWsolAccount?: boolean;
+  /** Demand this many lamports back from the sell leg, whatever the quote says. Set it above the stake and the
+   * transaction can only succeed at a profit: anything less makes the swap refuse and the whole trade revert. */
+  minOutLamports?: number };
 // Without a lookup table every account costs 32 bytes, so two legs fit only up to about 30 accounts in total.
 // Routes differ per token, so try progressively narrower routes rather than guessing one width for all of them.
 export const MAX_ACCOUNTS_LADDER = [14, 12, 10, 8];
@@ -29,6 +32,8 @@ export type Welded = {
   instructions: TransactionInstruction[]; lookupTables: AddressLookupTableAccount[]; message: MessageV0;
   sizeBytes: number; fits: boolean; staticAccounts: number; lookedUpAccounts: number; droppedDuplicates: number;
   maxAccountsUsed: number; attempts: string[];
+  /** What the sell leg was told to accept as a minimum, and the raw instruction data, so a caller can prove it changed. */
+  minOutDemanded: number; sellSwapData: string;
 };
 
 const toIx = (ix: JupIx) => new TransactionInstruction({
@@ -74,6 +79,10 @@ async function buildAt(tokenMint: string, sizeLamports: number, user: PublicKey,
   const o = { maxAccounts, slippageBps: opts.slippageBps ?? 0 };
   const buy = await quote(base, WSOL, tokenMint, String(sizeLamports), o);
   const sell = await quote(base, tokenMint, WSOL, buy.outAmount, o); // sell exactly what the buy is quoted to deliver
+  // Raise the sell leg's floor. Jupiter encodes otherAmountThreshold into the swap instruction as the minimum the
+  // swap will accept, so demanding more than the stake turns the trade into: profit, or revert for the base fee.
+  const minOutDemanded = opts.minOutLamports ?? Number(sell.otherAmountThreshold ?? sell.outAmount);
+  if (opts.minOutLamports !== undefined) sell.otherAmountThreshold = String(opts.minOutLamports);
   const [a, b] = await Promise.all([swapInstructions(base, buy, user.toBase58()), swapInstructions(base, sell, user.toBase58())]);
 
   // Order: wrap SOL and open token accounts, buy, sell, then unwrap everything back to SOL. The first leg's own
@@ -106,6 +115,7 @@ async function buildAt(tokenMint: string, sizeLamports: number, user: PublicKey,
     sizeLamports, tokensQuoted: buy.outAmount, lamportsBackQuoted: back, netPct: (back / sizeLamports - 1) * 100,
     buyVia: venues(buy), sellVia: venues(sell), buySlot: buy.contextSlot ?? 0, sellSlot: sell.contextSlot ?? 0,
     instructions, lookupTables: tables, message, sizeBytes, fits: sizeBytes <= TX_SIZE_LIMIT, maxAccountsUsed: maxAccounts, attempts: [],
+    minOutDemanded, sellSwapData: b.swapInstruction.data,
     staticAccounts: message.staticAccountKeys.length,
     lookedUpAccounts: message.addressTableLookups.reduce((n, l) => n + l.writableIndexes.length + l.readonlyIndexes.length, 0),
     droppedDuplicates: wanted.length - kept.length,
