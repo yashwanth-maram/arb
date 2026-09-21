@@ -50,6 +50,10 @@ async function main() {
     console.log(`  ${String(i).padStart(2)}  ${prog.padEnd(16)} ${String(ix.keys.length).padStart(2)} accounts, ${String(ix.data.length).padStart(3)} bytes${note}`);
   });
 
+  const TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+  const check = w.instructions.find((ix) => ix.programId.toBase58() === TOKEN_PROGRAM && ix.data[0] === 3 && ix.keys[0]?.pubkey.toBase58() === wsolAta);
+  console.log(`\nPROFIT CHECK: ${check ? `present, demanding ${(Number(Buffer.from(check.data).readBigUInt64LE(1)) / 1e9).toFixed(6)} SOL out of the trade's account` : "ABSENT -- a success here proves nothing"}`);
+
   const s = await simulateWelded(conn, w, payer);
   console.log(`\nsimulated at slot ${s.slot}: ${s.ok ? "SUCCEEDED" : `FAILED ${s.err}`}, ${s.unitsConsumed} compute units`);
   console.log("chain logs:");
