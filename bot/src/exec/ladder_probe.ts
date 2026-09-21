@@ -25,7 +25,8 @@ async function main() {
   const conn = new Connection(HTTP, "processed");
   const payer = new PublicKey(process.env.SIM_PAYER);
   const lamports = Math.round(SIZE_SOL * 1e9);
-  const opts = { connection: conn, keepWsolAccount: true };
+  // Slippage must NOT be 0 here: at 0, Jupiter's own minimum refuses first and we never reach our check.
+  const opts = { connection: conn, keepWsolAccount: true, slippageBps: Number(process.env.SLIPPAGE_BPS ?? 50) };
 
   // Is the payer's wrapped-SOL account really empty? If it is not, its balance pays the demand and every run "wins".
   const ata = associatedTokenAddress(new PublicKey("So11111111111111111111111111111111111111112"), payer);

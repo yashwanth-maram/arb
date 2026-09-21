@@ -2,14 +2,15 @@ import {
   AddressLookupTableAccount, ComputeBudgetProgram, PublicKey, TransactionInstruction, TransactionMessage,
   type Connection, type MessageV0,
 } from "@solana/web3.js";
+import { associatedTokenAddress } from "./simulate";
 import { WSOL } from "../config/watchlist";
 import { requestJson } from "./http";
 
 // The welded trade: buy a token with SOL and sell every unit straight back, as ONE Solana transaction built from
-// Jupiter's raw swap instructions. A transaction is all-or-nothing, and each swap carries its own minimum output,
-// so with slippage 0 the second swap refuses to pay out less than its quote and the whole trade cancels. That is
-// the profit check, and it needs no program of our own. Nothing here signs or sends: it only builds.
+// Jupiter's raw swap instructions. A transaction is all-or-nothing, so a single failing instruction reverts it all.
+// That is what makes a profit check possible without a program of our own. Nothing here signs or sends: it only builds.
 export const TX_SIZE_LIMIT = 1232;
+const TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 const DUMMY_BLOCKHASH = "11111111111111111111111111111111"; // size does not depend on the value; a simulation replaces it
 
 export type JupIx = { programId: string; accounts: { pubkey: string; isSigner: boolean; isWritable: boolean }[]; data: string };
@@ -20,9 +21,13 @@ type SwapIxResponse = {
 export type WeldOptions = { base?: string; maxAccounts?: number; slippageBps?: number; computeUnitPriceMicroLamports?: number; connection?: Connection;
   /** Leave the final unwrap out. The wrapped-SOL account then survives, so a simulation can read what came back. */
   keepWsolAccount?: boolean;
-  /** Demand this many lamports back from the sell leg, whatever the quote says. Set it above the stake and the
-   * transaction can only succeed at a profit: anything less makes the swap refuse and the whole trade revert. */
-  minOutLamports?: number };
+  /** Demand this many lamports back from the sell leg, whatever the quote says. Jupiter honours this on some routes
+   * and silently ignores it on others, so it is a hint, not a guarantee. */
+  minOutLamports?: number;
+  /** OUR OWN profit check, which nothing can ignore: after both swaps, move exactly this many lamports of wrapped
+   * SOL out of the trade's account. Too little came back -> the transfer fails -> the whole transaction reverts.
+   * Requires a payer whose wrapped-SOL account does not already exist, or an old balance would pay for it. */
+  requireLamportsOut?: number };
 // Without a lookup table every account costs 32 bytes, so two legs fit only up to about 30 accounts in total.
 // Routes differ per token, so try progressively narrower routes rather than guessing one width for all of them.
 export const MAX_ACCOUNTS_LADDER = [14, 12, 10, 8];
@@ -32,6 +37,8 @@ export type Welded = {
   instructions: TransactionInstruction[]; lookupTables: AddressLookupTableAccount[]; message: MessageV0;
   sizeBytes: number; fits: boolean; staticAccounts: number; lookedUpAccounts: number; droppedDuplicates: number;
   maxAccountsUsed: number; attempts: string[];
+  /** The floor our own transfer enforces, if any. */
+  requiredOut: number | null;
   /** What the sell leg was told to accept as a minimum, and the raw instruction data, so a caller can prove it changed. */
   minOutDemanded: number; sellSwapData: string;
 };
@@ -79,19 +86,44 @@ async function buildAt(tokenMint: string, sizeLamports: number, user: PublicKey,
   const o = { maxAccounts, slippageBps: opts.slippageBps ?? 0 };
   const buy = await quote(base, WSOL, tokenMint, String(sizeLamports), o);
   const sell = await quote(base, tokenMint, WSOL, buy.outAmount, o); // sell exactly what the buy is quoted to deliver
-  // Raise the sell leg's floor. Jupiter encodes otherAmountThreshold into the swap instruction as the minimum the
-  // swap will accept, so demanding more than the stake turns the trade into: profit, or revert for the base fee.
+  // Raise the sell leg's floor. Jupiter encodes otherAmountThreshold into the swap instruction on some routes and
+  // ignores it on others, so this is a hint; requireLamportsOut below is the check that actually binds.
   const minOutDemanded = opts.minOutLamports ?? Number(sell.otherAmountThreshold ?? sell.outAmount);
   if (opts.minOutLamports !== undefined) sell.otherAmountThreshold = String(opts.minOutLamports);
   const [a, b] = await Promise.all([swapInstructions(base, buy, user.toBase58()), swapInstructions(base, sell, user.toBase58())]);
 
-  // Order: wrap SOL and open token accounts, buy, sell, then unwrap everything back to SOL. The first leg's own
-  // clean-up is left out (it would close the wrapped-SOL account the second leg pays into), and steps both legs ask
-  // for, such as opening the same token account, are kept once.
+  // Order: wrap SOL and open token accounts, buy, sell, our profit check, then optionally unwrap back to SOL.
   const cleanup = opts.keepWsolAccount ? [] : (b.cleanupInstruction ? [b.cleanupInstruction] : []);
-  const wanted: JupIx[] = [...(a.setupInstructions ?? []), a.swapInstruction, ...(b.setupInstructions ?? []), b.swapInstruction, ...cleanup];
+  // Our own profit check: a plain SPL token transfer of the demanded amount out of the trade's wrapped-SOL account.
+  // The token program refuses to move more than the account holds, and one failed instruction reverts everything.
+  const proof: JupIx[] = [];
+  if (opts.requireLamportsOut !== undefined) {
+    const wsol = new PublicKey(WSOL);
+    const from = associatedTokenAddress(wsol, user);
+    // The destination is irrelevant: nothing is ever sent in a simulation, and the test is whether the transfer CAN be made.
+    const sink = new PublicKey(WSOL);
+    const to = associatedTokenAddress(wsol, sink);
+    const acc = (pubkey: string, isSigner: boolean, isWritable: boolean) => ({ pubkey, isSigner, isWritable });
+    proof.push({ // create the destination if it does not exist (idempotent: instruction 1 of the ATA program)
+      programId: "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
+      accounts: [acc(user.toBase58(), true, true), acc(to.toBase58(), false, true), acc(sink.toBase58(), false, false),
+        acc(WSOL, false, false), acc("11111111111111111111111111111111", false, false), acc(TOKEN_PROGRAM, false, false)],
+      data: Buffer.from([1]).toString("base64"),
+    });
+    const amount = Buffer.alloc(9); amount.writeUInt8(3, 0); amount.writeBigUInt64LE(BigInt(opts.requireLamportsOut), 1);
+    proof.push({ // SPL Token Transfer (instruction 3): from, to, owner
+      programId: TOKEN_PROGRAM,
+      accounts: [acc(from.toBase58(), false, true), acc(to.toBase58(), false, true), acc(user.toBase58(), true, false)],
+      data: amount.toString("base64"),
+    });
+  }
+  // De-duplicate only Jupiter's own steps (both legs ask to open the same accounts). OUR proof instructions must
+  // never be dropped: the account-creation step is byte-identical to one of Jupiter's, and when that matched, the
+  // transfer after it was removed too and the profit check silently vanished from the transaction.
+  const jupiterSteps: JupIx[] = [...(a.setupInstructions ?? []), a.swapInstruction, ...(b.setupInstructions ?? []), b.swapInstruction];
   const seen = new Set<string>();
-  const kept = wanted.filter((ix) => (seen.has(ixKey(ix)) ? false : (seen.add(ixKey(ix)), true)));
+  const kept = [...jupiterSteps.filter((ix) => (seen.has(ixKey(ix)) ? false : (seen.add(ixKey(ix)), true))), ...proof, ...cleanup];
+  const wanted: JupIx[] = [...jupiterSteps, ...proof, ...cleanup];
   const instructions = [
     ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 }),
     ComputeBudgetProgram.setComputeUnitPrice({ microLamports: opts.computeUnitPriceMicroLamports ?? 0 }),
@@ -115,7 +147,7 @@ async function buildAt(tokenMint: string, sizeLamports: number, user: PublicKey,
     sizeLamports, tokensQuoted: buy.outAmount, lamportsBackQuoted: back, netPct: (back / sizeLamports - 1) * 100,
     buyVia: venues(buy), sellVia: venues(sell), buySlot: buy.contextSlot ?? 0, sellSlot: sell.contextSlot ?? 0,
     instructions, lookupTables: tables, message, sizeBytes, fits: sizeBytes <= TX_SIZE_LIMIT, maxAccountsUsed: maxAccounts, attempts: [],
-    minOutDemanded, sellSwapData: b.swapInstruction.data,
+    minOutDemanded, sellSwapData: b.swapInstruction.data, requiredOut: opts.requireLamportsOut ?? null,
     staticAccounts: message.staticAccountKeys.length,
     lookedUpAccounts: message.addressTableLookups.reduce((n, l) => n + l.writableIndexes.length + l.readonlyIndexes.length, 0),
     droppedDuplicates: wanted.length - kept.length,
