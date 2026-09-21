@@ -23,6 +23,8 @@ export type ShadowOutcome = {
    * above the stake. Found by demanding progressively more, because our check moves the proceeds out of the account
    * we would otherwise read. Null when the trade did not win. */
   profitLamports: number | null; laddered: number | null;
+  /** The stake actually used, after the size cap. The requested size may have been larger. */
+  stakeLamports: number | null;
   quotedPct: number | null; sizeBytes: number | null; maxAccountsUsed: number | null;
   computeUnits: number | null; slot: number | null;
   buyVia: string[]; sellVia: string[]; err: string | null; ms: number;
@@ -49,7 +51,7 @@ export class ShadowGate {
 export async function shadowRun(conn: Connection, mint: string, sizeSol: number, cfg: ShadowConfig): Promise<ShadowOutcome> {
   const startedAt = Date.now();
   const empty = { quotedPct: null, sizeBytes: null, maxAccountsUsed: null, computeUnits: null, slot: null,
-    buyVia: [], sellVia: [], floorLamports: null, bareVerdict: null, profitLamports: null, laddered: null };
+    buyVia: [], sellVia: [], floorLamports: null, bareVerdict: null, profitLamports: null, laddered: null, stakeLamports: null };
   // A huge size makes every route too wide to fit and teaches nothing, so cap what is worth attempting.
   const size = Math.min(sizeSol, cfg.sizeCapSol);
   const lamports = Math.round(size * 1e9);
@@ -58,7 +60,7 @@ export async function shadowRun(conn: Connection, mint: string, sizeSol: number,
   try {
     const w = await build(cfg.floorLamports);
     const built = { quotedPct: w.netPct, sizeBytes: w.sizeBytes, maxAccountsUsed: w.maxAccountsUsed,
-      buyVia: w.buyVia, sellVia: w.sellVia, floorLamports: lamports + cfg.floorLamports };
+      buyVia: w.buyVia, sellVia: w.sellVia, floorLamports: lamports + cfg.floorLamports, stakeLamports: lamports };
     try {
       const s = await simulateWelded(conn, w, cfg.payer);
       // With our own check in place, any revert means the floor was not met: a loss, not a malfunction.

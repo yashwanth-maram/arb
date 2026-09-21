@@ -207,7 +207,7 @@ async function main() {
               // Our check moves the proceeds out of the account, so its closing balance is NOT the result: report
               // the floor the trade cleared, and the laddered figure showing how much more it could have paid.
               const won = sh.verdict === "won"
-                ? `, cleared +${((sh.floorLamports! - Math.round(sizeSol * 1e9)) / 1e9).toFixed(6)} SOL; ladder says up to +${sh.profitLamports === null ? "?" : (sh.profitLamports / 1e9).toFixed(6)} SOL (${sh.laddered ?? 0} step(s))`
+                ? `, staked ${((sh.stakeLamports ?? 0) / 1e9).toFixed(3)} SOL, cleared +${(((sh.floorLamports ?? 0) - (sh.stakeLamports ?? 0)) / 1e9).toFixed(6)} SOL; ladder says up to +${sh.profitLamports === null ? "?" : (sh.profitLamports / 1e9).toFixed(6)} SOL (${sh.laddered ?? 0} step(s))`
                 : "";
               const bare = sh.bareVerdict && sh.bareVerdict !== "skipped" ? `, bare floor ${sh.bareVerdict}` : "";
               console.log(`     bet: ${sh.verdict}${won}${bare}  (${sh.sizeBytes ?? "-"} bytes, ${sh.computeUnits ?? "-"} CU, ${sh.ms} ms)${sh.err && sh.verdict !== "reverted" ? `  ${sh.err}` : ""}`);
