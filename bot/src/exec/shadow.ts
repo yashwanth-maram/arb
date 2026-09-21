@@ -48,16 +48,18 @@ export async function shadowRun(conn: Connection, mint: string, sizeSol: number,
     const lamports = Math.round(size * 1e9);
     const floor = lamports + cfg.floorLamports;
     // keepWsolAccount: without it the clean-up closes the very account we measure.
-    const w = await buildWeldedTrade(mint, lamports, cfg.payer, { connection: conn, keepWsolAccount: true, minOutLamports: floor });
+    // requireLamportsOut is OUR check: a token transfer the trade must be able to make, which nothing can ignore.
+    const w = await buildWeldedTrade(mint, lamports, cfg.payer, { connection: conn, keepWsolAccount: true, requireLamportsOut: floor });
     const built = { quotedPct: w.netPct, sizeBytes: w.sizeBytes, maxAccountsUsed: w.maxAccountsUsed, buyVia: w.buyVia, sellVia: w.sellVia, floorLamports: floor };
     try {
       const s = await simulateWelded(conn, w, cfg.payer);
-      const verdict: ShadowOutcome["verdict"] = s.ok ? "won" : s.slippageRejected ? "reverted" : s.underfunded ? "underfunded" : "failed";
+      // With our own check in place, any revert means the floor was not met: that is a loss, not a malfunction.
+      const verdict: ShadowOutcome["verdict"] = s.ok ? "won" : s.underfunded ? "underfunded" : "reverted";
       // A revert at the honest floor may still have cleared the bare one: that gap is what a cheaper tip would unlock.
       let bareVerdict: ShadowOutcome["bareVerdict"] = "skipped";
       if (verdict === "reverted" && cfg.bareFloorLamports < cfg.floorLamports) {
         try {
-          const bare = await buildWeldedTrade(mint, lamports, cfg.payer, { connection: conn, keepWsolAccount: true, minOutLamports: lamports + cfg.bareFloorLamports });
+          const bare = await buildWeldedTrade(mint, lamports, cfg.payer, { connection: conn, keepWsolAccount: true, requireLamportsOut: lamports + cfg.bareFloorLamports });
           const sb = await simulateWelded(conn, bare, cfg.payer);
           bareVerdict = sb.ok ? "won" : "reverted";
         } catch { bareVerdict = "skipped"; }
