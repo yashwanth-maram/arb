@@ -55,11 +55,18 @@ function getJson(url: string): Promise<{ status: number; body: any }> {
     req.on("error", reject);
   });
 }
-/** One swap quote. Returns the output amount, or null when no route exists. */
+/** One swap quote. Returns the output amount, or null with a reason: a rate-limit refusal is NOT "no route", and
+ * reporting it as one made five of six verifications look like missing markets when they were only throttled. */
+let lastReason = "";
 async function out(inputMint: string, outputMint: string, amount: string): Promise<number | null> {
-  const { status, body } = await getJson(`${BASE}/swap/v1/quote?inputMint=${inputMint}&outputMint=${outputMint}&amount=${amount}&slippageBps=${SLIPPAGE_BPS}&restrictIntermediateTokens=true`);
-  if (status !== 200 || !body?.outAmount) return null;
-  return Number(body.outAmount);
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    const { status, body } = await getJson(`${BASE}/swap/v1/quote?inputMint=${inputMint}&outputMint=${outputMint}&amount=${amount}&slippageBps=${SLIPPAGE_BPS}&restrictIntermediateTokens=true`);
+    if (status === 200 && body?.outAmount) return Number(body.outAmount);
+    if (status === 429) { lastReason = "rate limited"; await sleep(4000 * attempt); continue; }
+    lastReason = status === 400 ? (body?.errorCode ?? "no route") : `HTTP ${status}`;
+    return null;
+  }
+  return null;
 }
 
 type Token = { symbol: string; mint: string; decimals: number };
@@ -78,7 +85,7 @@ async function main() {
   for (const t of tokens) {
     await reserve(2);
     const b = await out(WSOL, t.mint, String(lamports));
-    if (b === null) { console.log(`   ${t.symbol}: no route from SOL`); continue; }
+    if (b === null) { console.log(`   ${t.symbol}: SOL leg failed (${lastReason})`); continue; }
     buy.set(t.mint, b);
     const r = await out(t.mint, WSOL, String(b));
     if (r !== null) back.set(t.mint, r);
@@ -112,7 +119,7 @@ async function main() {
     cands.push({ a, b, estPct: (estimated / lamports - 1) * 100, gotB });
   }
   cands.sort((x, y) => y.estPct - x.estPct);
-  console.log(`best cycles by estimate (approximate, verified below):`);
+  console.log(`best cycles by estimate (the scaling ignores depth, so these run several points too high):`);
   for (const c of cands.slice(0, Math.max(VERIFY, 8)))
     console.log(`   SOL -> ${c.a.symbol} -> ${c.b.symbol} -> SOL   estimate ${pct(c.estPct)}`);
 
@@ -120,13 +127,13 @@ async function main() {
   console.log(`\nverifying the top ${VERIFY} exactly (three fresh quotes each):`);
   let bestReal = { pct: -Infinity, label: "" };
   for (const c of cands.slice(0, VERIFY)) {
-    await reserve(3);
+    await reserve(5); // the three legs plus headroom: a throttled verification teaches nothing
     const legA = await out(WSOL, c.a.mint, String(lamports));
-    if (legA === null) { console.log(`   SOL -> ${c.a.symbol} -> ${c.b.symbol}: leg 1 has no route`); continue; }
+    if (legA === null) { console.log(`   SOL -> ${c.a.symbol} -> ${c.b.symbol}: leg 1 failed (${lastReason})`); continue; }
     const legB = await out(c.a.mint, c.b.mint, String(legA));
-    if (legB === null) { console.log(`   SOL -> ${c.a.symbol} -> ${c.b.symbol}: leg 2 has no route`); continue; }
+    if (legB === null) { console.log(`   SOL -> ${c.a.symbol} -> ${c.b.symbol}: leg 2 failed (${lastReason})`); continue; }
     const legC = await out(c.b.mint, WSOL, String(legB));
-    if (legC === null) { console.log(`   SOL -> ${c.a.symbol} -> ${c.b.symbol}: leg 3 has no route`); continue; }
+    if (legC === null) { console.log(`   SOL -> ${c.a.symbol} -> ${c.b.symbol}: leg 3 failed (${lastReason})`); continue; }
     const realPct = (legC / lamports - 1) * 100;
     const profitSol = (legC - lamports - COST_LAMPORTS) / 1e9;
     const label = `SOL -> ${c.a.symbol} -> ${c.b.symbol} -> SOL`;
