@@ -35,7 +35,8 @@
     "newpool": "tsx src/research/newpool_lag.ts",
     "newborn": "tsx src/research/newborn.ts",
     "sizes": "tsx src/research/size_regime.ts",
-    "autopsy": "tsx src/research/candidate_autopsy.ts"
+    "autopsy": "tsx src/research/candidate_autopsy.ts",
+    "width": "tsx src/research/width_premium.ts"
   },
   "keywords": [],
   "author": "",
