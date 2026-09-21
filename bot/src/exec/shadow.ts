@@ -12,7 +12,7 @@ import { simulateWelded } from "./simulate";
 // The payer must have NO wrapped-SOL account of its own, or an old balance would pay for the transfer and the check
 // would pass regardless. Use `npm run exec:clean` to find one.
 export type ShadowConfig = { payer: PublicKey; maxPerHour: number; minIntervalMs: number; sizeCapSol: number;
-  floorLamports: number; bareFloorLamports: number;
+  floorLamports: number; bareFloorLamports: number; slippageBps: number;
   /** How many times to double the demand on a win, to find how big the win really was. 0 disables the ladder. */
   ladderSteps: number };
 export type ShadowOutcome = {
@@ -55,8 +55,10 @@ export async function shadowRun(conn: Connection, mint: string, sizeSol: number,
   // A huge size makes every route too wide to fit and teaches nothing, so cap what is worth attempting.
   const size = Math.min(sizeSol, cfg.sizeCapSol);
   const lamports = Math.round(size * 1e9);
+  // slippageBps must NOT be 0: at 0 Jupiter's own minimum reverts the swap before our check is ever reached, and
+  // the result would measure Jupiter rather than the trade. 50 bps lets the swaps run so OUR transfer decides.
   const build = (demand: number) =>
-    buildWeldedTrade(mint, lamports, cfg.payer, { connection: conn, keepWsolAccount: true, requireLamportsOut: lamports + demand });
+    buildWeldedTrade(mint, lamports, cfg.payer, { connection: conn, keepWsolAccount: true, slippageBps: cfg.slippageBps, requireLamportsOut: lamports + demand });
   try {
     const w = await build(cfg.floorLamports);
     const built = { quotedPct: w.netPct, sizeBytes: w.sizeBytes, maxAccountsUsed: w.maxAccountsUsed,

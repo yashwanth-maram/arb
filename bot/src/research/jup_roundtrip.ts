@@ -42,6 +42,7 @@ const SHADOW_SIZE_CAP_SOL = Number(process.env.SHADOW_SIZE_CAP_SOL ?? 2);  // wi
 const SHADOW_FLOOR_LAMPORTS = Number(process.env.SHADOW_FLOOR_LAMPORTS ?? 105_000);      // honest: signature + a tip
 const SHADOW_BARE_FLOOR_LAMPORTS = Number(process.env.SHADOW_BARE_FLOOR_LAMPORTS ?? 5_000); // signature only
 const SHADOW_LADDER_STEPS = Number(process.env.SHADOW_LADDER_STEPS ?? 6); // on a win, double the demand to size it
+const SHADOW_SLIPPAGE_BPS = Number(process.env.SHADOW_SLIPPAGE_BPS ?? 50); // never 0: our own check must be the one that decides
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const logPath = () => join(LOG_DIR, `jupiter-${new Date().toISOString().slice(0, 10)}.jsonl`);
@@ -162,7 +163,7 @@ async function main() {
     const rpc = process.env.RPC_HTTP ?? (process.env.HELIUS_API_KEY ? `https://mainnet.helius-rpc.com/?api-key=${process.env.HELIUS_API_KEY}` : "");
     if (!rpc) console.log("shadow off: no RPC (set HELIUS_API_KEY in bot/.env, or SHADOW=0 to silence this)");
     else if (!SHADOW_PAYER) console.log("shadow off: no SIM_PAYER (run `npm run exec:payer` to find one)");
-    else { conn = new Connection(rpc, "processed"); shadowCfg = { payer: new PublicKey(SHADOW_PAYER), maxPerHour: SHADOW_MAX_PER_HOUR, minIntervalMs: SHADOW_MIN_INTERVAL_MS, sizeCapSol: SHADOW_SIZE_CAP_SOL, floorLamports: SHADOW_FLOOR_LAMPORTS, bareFloorLamports: SHADOW_BARE_FLOOR_LAMPORTS, ladderSteps: SHADOW_LADDER_STEPS }; }
+    else { conn = new Connection(rpc, "processed"); shadowCfg = { payer: new PublicKey(SHADOW_PAYER), maxPerHour: SHADOW_MAX_PER_HOUR, minIntervalMs: SHADOW_MIN_INTERVAL_MS, sizeCapSol: SHADOW_SIZE_CAP_SOL, floorLamports: SHADOW_FLOOR_LAMPORTS, bareFloorLamports: SHADOW_BARE_FLOOR_LAMPORTS, ladderSteps: SHADOW_LADDER_STEPS, slippageBps: SHADOW_SLIPPAGE_BPS }; }
   }
   console.log(writeLine({ t: "start", pid: process.pid, base: BASE, keyed: !!KEY, reqPerMin: REQ_PER_MIN, tokens: tokens.length, baseSizeSol: BASE_SIZE, tipLamports: TIP_LAMPORTS, shadow: !!shadowCfg, shadowMaxPerHour: SHADOW_MAX_PER_HOUR, floorLamports: SHADOW_FLOOR_LAMPORTS, bareFloorLamports: SHADOW_BARE_FLOOR_LAMPORTS }));
   console.log(`sweeping ${tokens.length} tokens at ${BASE_SIZE} SOL, about ${(tokens.length * 2 * 60 / REQ_PER_MIN / 60).toFixed(1)} min per sweep; anything above ${FOLLOWUP_PCT}% is re-tested at ${FOLLOWUP_SIZES.join(", ")} SOL`);
