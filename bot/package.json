@@ -28,7 +28,8 @@
     "exec:noise": "tsx src/exec/payer_noise.ts",
     "exec:floor": "tsx src/exec/profit_floor.ts",
     "exec:clean": "tsx src/exec/find_clean_payer.ts",
-    "exec:ladder": "tsx src/exec/ladder_probe.ts"
+    "exec:ladder": "tsx src/exec/ladder_probe.ts",
+    "exec:dump": "tsx src/exec/dump_tx.ts"
   },
   "keywords": [],
   "author": "",

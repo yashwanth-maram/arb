@@ -76,6 +76,6 @@ export async function simulateWelded(conn: Connection, w: Welded, payer: PublicK
     netPctSimulated: delta === null ? null : (delta / w.sizeLamports) * 100,
     slippageRejected: !!err && SLIPPAGE_MARKERS.some((m) => haystack.includes(m)),
     underfunded: !!err && FUNDS_MARKERS.some((m) => haystack.includes(m)),
-    logTail: logs.slice(-8),
+    logTail: logs.slice(-14),
   };
 }
