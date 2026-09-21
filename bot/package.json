@@ -34,7 +34,8 @@
     "triangle": "tsx src/research/triangle.ts",
     "newpool": "tsx src/research/newpool_lag.ts",
     "newborn": "tsx src/research/newborn.ts",
-    "sizes": "tsx src/research/size_regime.ts"
+    "sizes": "tsx src/research/size_regime.ts",
+    "autopsy": "tsx src/research/candidate_autopsy.ts"
   },
   "keywords": [],
   "author": "",
