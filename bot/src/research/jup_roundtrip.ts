@@ -37,6 +37,10 @@ const SHADOW_PAYER = process.env.SIM_PAYER ?? "";           // a funded PUBLIC a
 const SHADOW_MAX_PER_HOUR = Number(process.env.SHADOW_MAX_PER_HOUR ?? 60);
 const SHADOW_MIN_INTERVAL_MS = Number(process.env.SHADOW_MIN_INTERVAL_MS ?? 5_000);
 const SHADOW_SIZE_CAP_SOL = Number(process.env.SHADOW_SIZE_CAP_SOL ?? 2);  // wider routes will not fit one transaction
+// Every shadow run is now a FREE BET: the sell leg is made to demand the stake plus this floor, so the trade either
+// pays a profit or reverts. A revert pays the base fee only (no tip, no pool fees), about 5,000 lamports.
+const SHADOW_FLOOR_LAMPORTS = Number(process.env.SHADOW_FLOOR_LAMPORTS ?? 105_000);      // honest: signature + a tip
+const SHADOW_BARE_FLOOR_LAMPORTS = Number(process.env.SHADOW_BARE_FLOOR_LAMPORTS ?? 5_000); // signature only
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const logPath = () => join(LOG_DIR, `jupiter-${new Date().toISOString().slice(0, 10)}.jsonl`);
@@ -157,9 +161,9 @@ async function main() {
     const rpc = process.env.RPC_HTTP ?? (process.env.HELIUS_API_KEY ? `https://mainnet.helius-rpc.com/?api-key=${process.env.HELIUS_API_KEY}` : "");
     if (!rpc) console.log("shadow off: no RPC (set HELIUS_API_KEY in bot/.env, or SHADOW=0 to silence this)");
     else if (!SHADOW_PAYER) console.log("shadow off: no SIM_PAYER (run `npm run exec:payer` to find one)");
-    else { conn = new Connection(rpc, "processed"); shadowCfg = { payer: new PublicKey(SHADOW_PAYER), maxPerHour: SHADOW_MAX_PER_HOUR, minIntervalMs: SHADOW_MIN_INTERVAL_MS, sizeCapSol: SHADOW_SIZE_CAP_SOL }; }
+    else { conn = new Connection(rpc, "processed"); shadowCfg = { payer: new PublicKey(SHADOW_PAYER), maxPerHour: SHADOW_MAX_PER_HOUR, minIntervalMs: SHADOW_MIN_INTERVAL_MS, sizeCapSol: SHADOW_SIZE_CAP_SOL, floorLamports: SHADOW_FLOOR_LAMPORTS, bareFloorLamports: SHADOW_BARE_FLOOR_LAMPORTS }; }
   }
-  console.log(writeLine({ t: "start", pid: process.pid, base: BASE, keyed: !!KEY, reqPerMin: REQ_PER_MIN, tokens: tokens.length, baseSizeSol: BASE_SIZE, tipLamports: TIP_LAMPORTS, shadow: !!shadowCfg, shadowMaxPerHour: SHADOW_MAX_PER_HOUR }));
+  console.log(writeLine({ t: "start", pid: process.pid, base: BASE, keyed: !!KEY, reqPerMin: REQ_PER_MIN, tokens: tokens.length, baseSizeSol: BASE_SIZE, tipLamports: TIP_LAMPORTS, shadow: !!shadowCfg, shadowMaxPerHour: SHADOW_MAX_PER_HOUR, floorLamports: SHADOW_FLOOR_LAMPORTS, bareFloorLamports: SHADOW_BARE_FLOOR_LAMPORTS }));
   console.log(`sweeping ${tokens.length} tokens at ${BASE_SIZE} SOL, about ${(tokens.length * 2 * 60 / REQ_PER_MIN / 60).toFixed(1)} min per sweep; anything above ${FOLLOWUP_PCT}% is re-tested at ${FOLLOWUP_SIZES.join(", ")} SOL`);
 
   let sweep = 0, trips = 0, errors = 0, hits = 0;
@@ -199,8 +203,9 @@ async function main() {
               const sh = await shadowRun(conn, t.mint, sizeSol, shadowCfg);
               shadowTally[sh.verdict] = (shadowTally[sh.verdict] ?? 0) + 1;
               writeLine({ t: "shadow", sym: t.symbol, mint: t.mint, sizeSol, ...sh, sweep });
-              const measured = sh.simulatedPct === null ? "" : `, measured ${sh.simulatedPct >= 0 ? "+" : ""}${sh.simulatedPct.toFixed(4)}%`;
-              console.log(`     shadow: ${sh.verdict}${measured}  (${sh.sizeBytes ?? "-"} bytes, ${sh.computeUnits ?? "-"} CU, ${sh.ms} ms)${sh.err && sh.verdict !== "cancelled_by_profit_check" ? `  ${sh.err}` : ""}`);
+              const measured = sh.simulatedPct === null ? "" : `, kept ${sh.simulatedPct >= 0 ? "+" : ""}${sh.simulatedPct.toFixed(4)}%`;
+              const bare = sh.bareVerdict && sh.bareVerdict !== "skipped" ? `, bare floor ${sh.bareVerdict}` : "";
+              console.log(`     bet: ${sh.verdict}${measured}${bare}  (${sh.sizeBytes ?? "-"} bytes, ${sh.computeUnits ?? "-"} CU, ${sh.ms} ms)${sh.err && sh.verdict !== "reverted" ? `  ${sh.err}` : ""}`);
             }
           }
           // A near miss at the base size earns the size ladder: the gap is fixed in percent, the costs are fixed in SOL.
