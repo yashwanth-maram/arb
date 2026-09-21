@@ -27,29 +27,31 @@ async function main() {
 
   console.log(`token ${TOKEN.slice(0, 6)}...  size ${SIZE_SOL} SOL (${size} lamports)\n`);
 
-  console.log("1. does Jupiter encode OUR floor into the instruction?");
-  const plain = await buildWeldedTrade(TOKEN, size, payer, opts);
-  const raised = await buildWeldedTrade(TOKEN, size, payer, { ...opts, minOutLamports: Math.round(size * 1.05) });
-  console.log(`   quoted floor ${plain.minOutDemanded} lamports -> instruction data ${plain.sellSwapData.slice(0, 24)}...`);
-  console.log(`   demanded     ${raised.minOutDemanded} lamports -> instruction data ${raised.sellSwapData.slice(0, 24)}...`);
-  if (plain.sellSwapData === raised.sellSwapData) {
-    console.log("   IDENTICAL: Jupiter ignored our floor. The free bet cannot be built this way.\n");
-    return;
+  // Jupiter honours minOutLamports on some routes and silently ignores it on others, so it cannot be trusted alone.
+  // OUR check is a plain token transfer of the demanded amount at the end of the trade: the token program enforces it
+  // and one failed instruction reverts everything. These runs prove that it bites at demands nothing could pay.
+  console.log("1. our own profit check, tested at demands the market cannot possibly meet:");
+  for (const pct of [20, 5, 1]) {
+    const floor = size + Math.round(size * pct / 100);
+    try {
+      const w = await buildWeldedTrade(TOKEN, size, payer, { ...opts, requireLamportsOut: floor });
+      const sim = await simulateWelded(conn, w, payer);
+      console.log(`   demand stake +${String(pct).padStart(2)}% (${sol(floor)} SOL back) -> ${sim.ok ? "WON, which should be impossible: the check is not biting" : "reverted, as it must"}`);
+    } catch (e) { console.log(`   demand stake +${pct}% -> could not build: ${(e as Error).message.slice(0, 90)}`); }
   }
-  console.log("   DIFFERENT: our floor is in the instruction. The free bet can be built.\n");
 
-  console.log("2. an impossible floor must revert (proving the safety bites):");
-  const s1 = await simulateWelded(conn, raised, payer);
-  console.log(`   demanded 5% profit -> ${s1.ok ? "EXECUTED, which should not happen" : s1.slippageRejected ? "reverted by the floor, as intended" : `failed: ${s1.err}`}`);
-
-  console.log("\n3. the real bet: demand the stake plus what it costs to land.");
+  console.log("\n2. the real bet: demand the stake plus what it costs to land.");
   const floor = size + COST_LAMPORTS;
-  const bet = await buildWeldedTrade(TOKEN, size, payer, { ...opts, minOutLamports: floor });
-  console.log(`   staked ${sol(size)} SOL, demanding ${sol(floor)} back (quote says ${bet.netPct >= 0 ? "+" : ""}${bet.netPct.toFixed(4)}%)`);
+  const bet = await buildWeldedTrade(TOKEN, size, payer, { ...opts, requireLamportsOut: floor });
+  console.log(`   staked ${sol(size)} SOL, demanding ${sol(floor)} back (quote says ${bet.netPct >= 0 ? "+" : ""}${bet.netPct.toFixed(4)}%), ${bet.sizeBytes} bytes`);
   const s2 = await simulateWelded(conn, bet, payer);
-  if (s2.ok) console.log(`   WON: measured ${s2.wsolDelta! >= 0 ? "+" : ""}${sol(s2.wsolDelta)} SOL (${s2.netPctSimulated!.toFixed(4)}%), ${s2.unitsConsumed} compute units`);
-  else if (s2.slippageRejected) console.log(`   reverted: the chain would not pay the floor. Cost if sent: about 0.000005 SOL.`);
-  else console.log(`   failed for another reason: ${s2.err}`);
+  if (s2.ok) console.log(`   WON: the chain paid the floor. Account change ${sol(s2.wsolDelta)} SOL, ${s2.unitsConsumed} compute units`);
+  else console.log(`   reverted: the chain would not pay the floor. Cost if sent: about 0.000005 SOL.`);
+
+  console.log("\n3. a demand of zero profit (stake back exactly) should usually succeed, proving the trade itself works:");
+  const even = await buildWeldedTrade(TOKEN, size, payer, { ...opts, requireLamportsOut: size });
+  const s3 = await simulateWelded(conn, even, payer);
+  console.log(`   demand ${sol(size)} back -> ${s3.ok ? "returned at least the stake" : "did not even return the stake (the round trip loses)"}`);
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });

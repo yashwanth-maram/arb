@@ -26,7 +26,8 @@
     "exec:sim": "tsx src/exec/sim_probe.ts",
     "exec:payer": "tsx src/exec/find_payer.ts",
     "exec:noise": "tsx src/exec/payer_noise.ts",
-    "exec:floor": "tsx src/exec/profit_floor.ts"
+    "exec:floor": "tsx src/exec/profit_floor.ts",
+    "exec:clean": "tsx src/exec/find_clean_payer.ts"
   },
   "keywords": [],
   "author": "",
